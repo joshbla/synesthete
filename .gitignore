@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+*.log
+
+# Mac
+.DS_Store
+
+# IDEs
+.vscode/
+.idea/
+.cursor/
+
+# Project Specific
+# Generated data
+data/
+!data/.gitkeep
+
+# Trained models
+models/
+!models/.gitkeep
+
+# Outputs
+*.mp4
+*.wav
+output_test.mp4
+
+# Curated outputs (large binaries, best not to commit to git)
+favorites/
+
+# Weights & Biases
+wandb/
+
+# Temporary scripts/files
+*_temp.mp4
+*_temp.wav

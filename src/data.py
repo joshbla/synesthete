@@ -1,0 +1,106 @@
+import torch
+import random
+from torch.utils.data import IterableDataset
+from .audio_gen import AudioGenerator
+from .visualizers import get_random_visualizer
+
+# Keep the old function for creating validation sets or debug samples
+def create_synthetic_dataset(output_dir, num_samples=100, duration=3.0, fps=30, height=128, width=128):
+    import soundfile as sf
+    from pathlib import Path
+    from torchcodec.encoders import VideoEncoder
+    
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    print(f"Generating {num_samples} static samples in {output_dir}...")
+    
+    audio_gen = AudioGenerator()
+    
+    for i in range(num_samples):
+        waveform = audio_gen.generate_sequence(duration=duration, bpm=random.randint(80, 140))
+        viz = get_random_visualizer()
+        video = viz.render(waveform, fps=fps, height=height, width=width)
+        
+        audio_path = output_dir / f"sample_{i}.wav"
+        video_path = output_dir / f"sample_{i}.mp4"
+        
+        sf.write(audio_path, waveform.squeeze(0).numpy(), 16000)
+        
+        video_uint8 = video.mul(255).byte()
+        encoder = VideoEncoder(video_uint8, frame_rate=fps)
+        encoder.to_file(str(video_path))
+        
+    print("Generation complete.")
+
+class InfiniteAVDataset(IterableDataset):
+    """
+    A PyTorch IterableDataset that generates audio-video pairs on-the-fly.
+    This allows for infinite training without storage bottlenecks.
+    """
+    def __init__(self, samples_per_epoch=1000, duration=3.0, fps=30, height=128, width=128):
+        self.samples_per_epoch = samples_per_epoch
+        self.duration = duration
+        self.fps = fps
+        self.height = height
+        self.width = width
+        self.audio_gen = AudioGenerator()
+
+    def __iter__(self):
+        worker_info = torch.utils.data.get_worker_info()
+        if worker_info is None:
+            # Single-process data loading, return the full iterator
+            iter_start = 0
+            iter_end = self.samples_per_epoch
+        else:
+            # Multi-process data loading, split workload
+            per_worker = int(self.samples_per_epoch / worker_info.num_workers)
+            worker_id = worker_info.id
+            iter_start = worker_id * per_worker
+            iter_end = iter_start + per_worker
+            
+            # Seed random based on worker ID to ensure different data
+            random.seed(worker_info.seed)
+            torch.manual_seed(worker_info.seed)
+            
+        for _ in range(iter_start, iter_end):
+            # 1. Generate Audio
+            waveform = self.audio_gen.generate_sequence(
+                duration=self.duration, 
+                bpm=random.randint(80, 140)
+            )
+            
+            # 2. Generate Video
+            viz = get_random_visualizer()
+            video = viz.render(
+                waveform, 
+                fps=self.fps, 
+                height=self.height, 
+                width=self.width
+            )
+            
+            # 3. Return pair (Audio, Video)
+            # Audio: (1, T_audio)
+            # Video: (T_video, C, H, W) -> Permute to (C, T_video, H, W) for training?
+            # Wait, our model expects (B, 1, T_audio).
+            # Our current AVDataset (disk-based) returned:
+            # waveform: (1, T) or (C, T)
+            # video: (T, C, H, W) from read_video then permuted to (T, C, H, W) then float.
+            # Actually, let's check train.py for expected shape.
+            
+            # In train.py:
+            # video = video.permute(0, 3, 1, 2) -> (T, C, H, W)
+            # But read_video returns (T, H, W, C).
+            # So (T, C, H, W) is the target for the model output?
+            # Model output: (B, num_frames, 3, H, W) -> (B, T, C, H, W)
+            # So we should return (T, C, H, W).
+            
+            # The visualizers return (T, C, H, W) already?
+            # Let's check visualizers.py.
+            # video_frames = torch.zeros(num_frames, 3, height, width) -> (T, C, H, W)
+            # Yes.
+            
+            yield waveform, video
+
+    def __len__(self):
+        return self.samples_per_epoch

@@ -1,0 +1,33 @@
+project:
+  name: "synesthete"
+  version: "0.1.0"
+
+data:
+  train_dir: "data/train"
+  num_samples: 100
+  sample_rate: 16000
+  duration: 3.0
+  height: 128
+  width: 128
+  fps: 30
+
+model:
+  frame_size: [128, 128]
+  # 3.0 seconds * 30 fps = 90 frames
+  num_frames: 90
+  
+train:
+  output_dir: "models"
+  epochs: 20
+  batch_size: 8
+  learning_rate: 0.001
+  save_name: "model_latest.pth"
+
+tracker:
+  enabled: true
+  entity: null # Set this if using a team, otherwise defaults to user
+  log_videos: false # Disable video uploads to save data/storage
+
+
+inference:
+  output_video: "output_test.mp4"
