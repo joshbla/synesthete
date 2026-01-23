@@ -33,6 +33,8 @@ def create_synthetic_dataset(output_dir, num_samples=100, duration=3.0, fps=30, 
         
     print("Generation complete.")
 
+import time
+
 class InfiniteAVDataset(IterableDataset):
     """
     A PyTorch IterableDataset that generates audio-video pairs on-the-fly.
@@ -64,6 +66,8 @@ class InfiniteAVDataset(IterableDataset):
             torch.manual_seed(worker_info.seed)
             
         for _ in range(iter_start, iter_end):
+            start_time = time.time()
+            
             # 1. Generate Audio
             waveform = self.audio_gen.generate_sequence(
                 duration=self.duration, 
@@ -79,26 +83,9 @@ class InfiniteAVDataset(IterableDataset):
                 width=self.width
             )
             
-            # 3. Return pair (Audio, Video)
-            # Audio: (1, T_audio)
-            # Video: (T_video, C, H, W) -> Permute to (C, T_video, H, W) for training?
-            # Wait, our model expects (B, 1, T_audio).
-            # Our current AVDataset (disk-based) returned:
-            # waveform: (1, T) or (C, T)
-            # video: (T, C, H, W) from read_video then permuted to (T, C, H, W) then float.
-            # Actually, let's check train.py for expected shape.
-            
-            # In train.py:
-            # video = video.permute(0, 3, 1, 2) -> (T, C, H, W)
-            # But read_video returns (T, H, W, C).
-            # So (T, C, H, W) is the target for the model output?
-            # Model output: (B, num_frames, 3, H, W) -> (B, T, C, H, W)
-            # So we should return (T, C, H, W).
-            
-            # The visualizers return (T, C, H, W) already?
-            # Let's check visualizers.py.
-            # video_frames = torch.zeros(num_frames, 3, height, width) -> (T, C, H, W)
-            # Yes.
+            gen_time = time.time() - start_time
+            if random.random() < 0.01: # Log 1% of the time to avoid spam
+                print(f"[DataGen] Generated sample in {gen_time*1000:.2f}ms")
             
             yield waveform, video
 

@@ -4,7 +4,7 @@ project:
 
 data:
   train_dir: "data/train"
-  num_samples: 100
+  num_samples: 50 # Reduced from 100 for faster iteration
   sample_rate: 16000
   duration: 3.0
   height: 128
@@ -18,7 +18,7 @@ model:
   
 train:
   output_dir: "models"
-  epochs: 20
+  epochs: 10 # Reduced from 20 for faster iteration
   batch_size: 8
   learning_rate: 0.001
   save_name: "model_latest.pth"
