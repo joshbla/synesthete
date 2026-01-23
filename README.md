@@ -89,7 +89,7 @@ We are following a "crawl, walk, run" strategy. Current progress and next steps:
 - `config/`: Configuration files (YAML).
 - `src/`: Source code modules.
     - `audio_gen.py`: Procedural audio generation.
-    - `visualizers.py`: Suite of algorithmic video generators.
+    - `visualizers/`: Package containing algorithmic video generators.
     - `data.py`: Dataset creation and management.
     - `model.py`: PyTorch neural network architecture (Hybrid CNN + Transformer).
     - `train.py`: Training loop.
