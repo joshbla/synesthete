@@ -10,11 +10,13 @@ import soundfile as sf
 from .model import AudioToVideoNet
 from .tracker import ExperimentTracker
 from .data import InfiniteAVDataset, create_synthetic_dataset
+from .utils import get_device
 
 # We keep AVDataset for backward compatibility or validation on static files
 class AVDataset(Dataset):
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, config=None):
         self.data_dir = Path(data_dir)
+        self.config = config or {}
         self.samples = list(self.data_dir.glob("*.wav"))
         self.data_cache = []
         
@@ -29,7 +31,10 @@ class AVDataset(Dataset):
                 waveform = waveform.t()
             
             # Ensure fixed length (pad or trim) - simple approach: trim to 3s
-            target_len = 48000 # 3s @ 16kHz
+            sample_rate = self.config.get('data', {}).get('sample_rate', 16000)
+            duration = self.config.get('data', {}).get('duration', 3.0)
+            target_len = int(sample_rate * duration)
+            
             if waveform.shape[1] > target_len:
                 waveform = waveform[:, :target_len]
             elif waveform.shape[1] < target_len:
@@ -50,7 +55,10 @@ class AVDataset(Dataset):
             # video = video.permute(0, 3, 1, 2).float() / 255.0
             
             # Ensure 90 frames (3s * 30fps)
-            target_frames = 90
+            target_frames = self.config.get('model', {}).get('num_frames', 90)
+            height = self.config.get('data', {}).get('height', 128)
+            width = self.config.get('data', {}).get('width', 128)
+            
             if video.shape[0] > target_frames:
                 video = video[:target_frames]
             elif video.shape[0] < target_frames:
@@ -60,7 +68,7 @@ class AVDataset(Dataset):
                     video = torch.cat([video, padding], dim=0)
                 else:
                     # Handle empty video case
-                    video = torch.zeros(target_frames, 3, 128, 128)
+                    video = torch.zeros(target_frames, 3, height, width)
                 
             self.data_cache.append((waveform, video))
             
@@ -71,7 +79,7 @@ class AVDataset(Dataset):
         return self.data_cache[idx]
 
 def train_model(data_dir, output_dir="models", epochs=20, batch_size=8, learning_rate=1e-3, frame_size=(128, 128), num_frames=90, config=None):
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = get_device()
     print(f"Training on {device}")
     
     # Initialize Tracker
@@ -92,7 +100,8 @@ def train_model(data_dir, output_dir="models", epochs=20, batch_size=8, learning
     # but can be increased for CPU generation speedup.
     dataloader = DataLoader(dataset, batch_size=batch_size, num_workers=0)
     
-    model = AudioToVideoNet(num_frames=num_frames, frame_size=frame_size).to(device)
+    d_model = config.get('model', {}).get('d_model', 256)
+    model = AudioToVideoNet(num_frames=num_frames, frame_size=frame_size, d_model=d_model).to(device)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.MSELoss()
     

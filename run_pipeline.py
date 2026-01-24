@@ -50,10 +50,11 @@ def main():
     # This generates the final video using the trained Brain and Eye.
     if not args.skip_inference:
         print("\n[Step 3] Running Inference...", flush=True)
+        num_frames = cfg.get('model', {}).get('num_frames', 90)
         run_diffusion_inference(
             model_path="diffusion_checkpoints/diff_latest.pth",
             output_path="output_test.mp4",
-            num_frames=90
+            num_frames=num_frames
         )
         print("\n=== Pipeline Complete ===", flush=True)
         print(f"Check output_test.mp4 to see the result!", flush=True)

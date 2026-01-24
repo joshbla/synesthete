@@ -3,10 +3,11 @@ import torchaudio
 import torchvision
 from pathlib import Path
 from .model import AudioToVideoNet
+from .utils import get_device
 # from .data import generate_musical_clip
 
 def run_inference(model_path, output_path="output.mp4", input_audio_path=None, num_frames=90, frame_size=(128, 128)):
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = get_device()
     print(f"Running inference on {device}")
     
     # Load Model

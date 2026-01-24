@@ -16,16 +16,17 @@ from diffusion import DiffusionTransformer, NoiseScheduler
 from audio_gen import AudioGenerator
 from visualizers import get_random_visualizer
 from tracker import ExperimentTracker
-from utils import load_config
+from utils import load_config, get_device
 
 # Dataset that returns (Audio, Latents)
 # We generate Video -> Encode with VAE -> Return Latents
 class LatentDiffusionDataset(IterableDataset):
-    def __init__(self, vae, samples_per_epoch=2000, device='cpu'):
-        self.samples_per_epoch = samples_per_epoch
+    def __init__(self, vae, config, device='cpu'):
+        self.config = config
+        self.samples_per_epoch = config.get('diffusion', {}).get('samples_per_epoch', 2000)
         self.vae = vae
         self.device = device
-        self.audio_gen = AudioGenerator(sample_rate=16000) # Match model SR
+        self.audio_gen = AudioGenerator(sample_rate=config.get('data', {}).get('sample_rate', 16000))
         
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -40,14 +41,18 @@ class LatentDiffusionDataset(IterableDataset):
         for _ in range(iter_start, iter_end):
             # 1. Generate Data
             # Use procedural audio instead of random noise
-            waveform = self.audio_gen.generate_sequence(duration=3.0) # (1, 48000)
+            duration = self.config.get('data', {}).get('duration', 3.0)
+            waveform = self.audio_gen.generate_sequence(duration=duration) # (1, 48000)
             
             # Ideally we want real audio-viz pairs, but our current viz is random.
             # To make the model learn "Audio -> Viz", we need the viz to be reactive.
             # Our visualizers ARE reactive to the waveform passed in.
             
             viz = get_random_visualizer()
-            frames = viz.render(waveform, fps=30) # (90, 3, 128, 128)
+            fps = self.config.get('data', {}).get('fps', 30)
+            height = self.config.get('data', {}).get('height', 128)
+            width = self.config.get('data', {}).get('width', 128)
+            frames = viz.render(waveform, fps=fps, height=height, width=width)
             
             # 2. Encode to Latents
             # We process in batches to save memory if needed, but 90 frames is small
@@ -67,12 +72,13 @@ class LatentDiffusionDataset(IterableDataset):
             # Yield: (Audio_Clip, Latent_Frame_t, t_index)
             # Actually, let's just pick random frames from the clip to avoid correlation
             indices = torch.randperm(frames.size(0))
-            for i in indices[:10]: # Just take 10 frames per clip to mix it up
+            frames_per_clip = self.config.get('diffusion', {}).get('frames_per_clip', 10)
+            for i in indices[:frames_per_clip]: 
                 yield waveform, latents[i]
 
 class DiffusionTrainer:
     def __init__(self):
-        self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+        self.device = get_device()
         print(f"Training on {self.device}")
         
         # Load config
@@ -82,7 +88,8 @@ class DiffusionTrainer:
             self.config = {}
         
         # 1. Load VAE (Frozen)
-        self.vae = VAE(latent_dim=256).to(self.device)
+        latent_dim = self.config.get('model', {}).get('latent_dim', 256)
+        self.vae = VAE(latent_dim=latent_dim).to(self.device)
         try:
             self.vae.load_state_dict(torch.load("vae_checkpoints/vae_latest.pth", map_location=self.device))
             print("Loaded VAE checkpoint.")
@@ -94,7 +101,11 @@ class DiffusionTrainer:
             param.requires_grad = False
             
         # 2. Init Diffusion Model
-        self.model = DiffusionTransformer(latent_dim=256, d_model=512).to(self.device)
+        d_model = self.config.get('model', {}).get('d_model', 512)
+        height = self.config.get('data', {}).get('height', 128)
+        # VAE downsamples by 16 (4 layers of stride 2)
+        latent_spatial_size = height // 16 
+        self.model = DiffusionTransformer(latent_dim=latent_dim, d_model=d_model, latent_spatial_size=latent_spatial_size).to(self.device)
         lr = self.config.get('diffusion', {}).get('learning_rate', 1e-4)
         self.optimizer = optim.AdamW(self.model.parameters(), lr=lr)
         
@@ -112,7 +123,7 @@ class DiffusionTrainer:
         samples_per_epoch = self.config.get('diffusion', {}).get('samples_per_epoch', 100)
         batch_size = self.config.get('diffusion', {}).get('batch_size', 32)
         
-        dataset = LatentDiffusionDataset(self.vae, samples_per_epoch=samples_per_epoch, device=self.device)
+        dataset = LatentDiffusionDataset(self.vae, config=self.config, device=self.device)
         dataloader = DataLoader(dataset, batch_size=batch_size)
         
         self.model.train()

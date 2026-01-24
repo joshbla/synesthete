@@ -14,13 +14,14 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from vae import VAE
 from visualizers import get_random_visualizer
 from tracker import ExperimentTracker
-from utils import load_config
+from utils import load_config, get_device
 
 # Simple dataset that just generates frames (ignoring audio)
 class VisualizerFrameDataset(IterableDataset):
-    def __init__(self, samples_per_epoch=2000, batch_size=32):
-        self.samples_per_epoch = samples_per_epoch
-        self.batch_size = batch_size
+    def __init__(self, config):
+        self.config = config
+        self.samples_per_epoch = config.get('vae', {}).get('samples_per_epoch', 2000)
+        self.batch_size = config.get('vae', {}).get('batch_size', 32)
         
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -35,9 +36,15 @@ class VisualizerFrameDataset(IterableDataset):
         for _ in range(iter_start, iter_end):
             # Generate a clip
             # We don't need real audio, just random waveform to trigger viz
-            waveform = torch.randn(1, 48000) 
+            sample_rate = self.config.get('data', {}).get('sample_rate', 16000)
+            duration = self.config.get('data', {}).get('duration', 3.0)
+            audio_len = int(sample_rate * duration)
+            waveform = torch.randn(1, audio_len) 
             viz = get_random_visualizer()
-            frames = viz.render(waveform, fps=30) # (T, 3, H, W)
+            fps = self.config.get('data', {}).get('fps', 30)
+            height = self.config.get('data', {}).get('height', 128)
+            width = self.config.get('data', {}).get('width', 128)
+            frames = viz.render(waveform, fps=fps, height=height, width=width) # (T, 3, H, W)
             
             # Yield individual frames to train the VAE on images
             # Shuffle frames to break temporal correlation in batch
@@ -45,16 +52,16 @@ class VisualizerFrameDataset(IterableDataset):
             for i in indices:
                 yield frames[i]
 
-def loss_function(recon_x, x, mu, log_var):
+def loss_function(recon_x, x, mu, log_var, kld_weight=0.1):
     """VAE Loss = MSE + KLD"""
     MSE = nn.functional.mse_loss(recon_x, x, reduction='sum')
     # KLD = -0.5 * sum(1 + log(sigma^2) - mu^2 - sigma^2)
     KLD = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
     # Weight KLD to prevent posterior collapse or explosion
-    return MSE + 0.1 * KLD
+    return MSE + kld_weight * KLD
 
 def train_vae():
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    device = get_device()
     print(f"Training VAE on {device}...")
     
     # Load config for tracker
@@ -69,13 +76,13 @@ def train_vae():
     BATCH_SIZE = config.get('vae', {}).get('batch_size', 64)
     EPOCHS = config.get('vae', {}).get('epochs', 10)
     LR = config.get('vae', {}).get('learning_rate', 1e-4)
-    LATENT_DIM = 256
-    SAMPLES_PER_EPOCH = config.get('vae', {}).get('samples_per_epoch', 100)
+    LATENT_DIM = config.get('model', {}).get('latent_dim', 256)
+    KLD_WEIGHT = config.get('vae', {}).get('kld_weight', 0.1)
     
     model = VAE(latent_dim=LATENT_DIM).to(device)
     optimizer = optim.Adam(model.parameters(), lr=LR)
     
-    dataset = VisualizerFrameDataset(samples_per_epoch=SAMPLES_PER_EPOCH)
+    dataset = VisualizerFrameDataset(config=config)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE)
     
     output_dir = Path("vae_checkpoints")
@@ -93,7 +100,7 @@ def train_vae():
             
             optimizer.zero_grad()
             recon_batch, mu, log_var = model(frames)
-            loss = loss_function(recon_batch, frames, mu, log_var)
+            loss = loss_function(recon_batch, frames, mu, log_var, kld_weight=KLD_WEIGHT)
             
             if torch.isnan(loss):
                 print("Warning: Loss is NaN, skipping batch")

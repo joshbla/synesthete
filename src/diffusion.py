@@ -82,11 +82,13 @@ class DiffusionTransformer(nn.Module):
     Output:
     - noise_pred: Predicted Noise (B, 256, 8, 8)
     """
-    def __init__(self, latent_dim=256, d_model=512, nhead=8, num_layers=6):
+    def __init__(self, latent_dim=256, d_model=512, nhead=8, num_layers=6, latent_spatial_size=8):
         super().__init__()
         
         self.latent_dim = latent_dim
         self.d_model = d_model
+        self.latent_spatial_size = latent_spatial_size
+        num_tokens = latent_spatial_size * latent_spatial_size
         
         # 1. Time Embedding
         self.time_mlp = nn.Sequential(
@@ -117,9 +119,9 @@ class DiffusionTransformer(nn.Module):
         )
         
         # 3. Latent Input Projection
-        # 8x8 spatial grid is small enough to flatten to 64 tokens
+        # Flatten spatial grid to tokens
         self.input_proj = nn.Conv2d(latent_dim, d_model, kernel_size=1)
-        self.pos_embed = nn.Parameter(torch.zeros(1, 64, d_model))
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_tokens, d_model))
         
         # 4. Transformer Decoder (Cross-Attn to Audio)
         # We use TransformerDecoder because we have "queries" (latents) and "keys/values" (audio)
@@ -131,7 +133,7 @@ class DiffusionTransformer(nn.Module):
         
     def forward(self, x, t, audio):
         """
-        x: (B, 256, 8, 8)
+        x: (B, latent_dim, H, W)
         t: (B,)
         audio: (B, 1, 48000)
         """
@@ -146,8 +148,8 @@ class DiffusionTransformer(nn.Module):
         audio_feats = audio_feats.permute(0, 2, 1) # (B, T_seq, d_model)
         
         # 3. Embed Latents
-        h = self.input_proj(x) # (B, d_model, 8, 8)
-        h = h.flatten(2).permute(0, 2, 1) # (B, 64, d_model)
+        h = self.input_proj(x) # (B, d_model, H, W)
+        h = h.flatten(2).permute(0, 2, 1) # (B, num_tokens, d_model)
         
         # Add positional embedding
         h = h + self.pos_embed
@@ -157,10 +159,10 @@ class DiffusionTransformer(nn.Module):
         
         # 4. Transformer
         # tgt = latents, memory = audio
-        h = self.transformer(tgt=h, memory=audio_feats) # (B, 64, d_model)
+        h = self.transformer(tgt=h, memory=audio_feats) # (B, num_tokens, d_model)
         
         # 5. Output
-        h = h.permute(0, 2, 1).view(B, self.d_model, 8, 8)
-        out = self.output_proj(h) # (B, 256, 8, 8)
+        h = h.permute(0, 2, 1).view(B, self.d_model, self.latent_spatial_size, self.latent_spatial_size)
+        out = self.output_proj(h) # (B, latent_dim, H, W)
         
         return out

@@ -11,13 +11,19 @@ from vae import VAE
 from diffusion import DiffusionTransformer, NoiseScheduler
 from audio_gen import AudioGenerator
 from visualizers import get_random_visualizer
+from utils import load_config, get_device
 
-def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", output_path="output_diffusion.mp4", input_audio_path=None, num_frames=90):
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", output_path="output_diffusion.mp4", input_audio_path=None, num_frames=None):
+    device = get_device()
     print(f"Running diffusion inference on {device}")
     
+    config = load_config()
+    if num_frames is None:
+        num_frames = config.get('model', {}).get('num_frames', 90)
+    
     # 1. Load VAE (Frozen)
-    vae = VAE(latent_dim=256).to(device)
+    latent_dim = config.get('model', {}).get('latent_dim', 256)
+    vae = VAE(latent_dim=latent_dim).to(device)
     try:
         vae.load_state_dict(torch.load("vae_checkpoints/vae_latest.pth", map_location=device))
         print("Loaded VAE checkpoint.")
@@ -26,7 +32,10 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
     vae.eval()
     
     # 2. Load Diffusion Model
-    model = DiffusionTransformer(latent_dim=256, d_model=512).to(device)
+    d_model = config.get('model', {}).get('d_model', 512)
+    height = config.get('data', {}).get('height', 128)
+    latent_spatial_size = height // 16
+    model = DiffusionTransformer(latent_dim=latent_dim, d_model=d_model, latent_spatial_size=latent_spatial_size).to(device)
     try:
         model.load_state_dict(torch.load(model_path, map_location=device))
         print(f"Loaded Diffusion checkpoint from {model_path}")
@@ -35,6 +44,7 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
     model.eval()
     
     # 3. Get Audio
+    sample_rate = config.get('data', {}).get('sample_rate', 16000)
     if input_audio_path:
         import soundfile as sf
         wav_data, sr = sf.read(input_audio_path)
@@ -45,17 +55,18 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
             waveform = waveform.t()
         
         # Resample if needed
-        if sr != 16000:
+        if sr != sample_rate:
             import torchaudio.transforms as T
-            resampler = T.Resample(sr, 16000)
+            resampler = T.Resample(sr, sample_rate)
             waveform = resampler(waveform)
     else:
         print("No input audio provided, generating synthetic complex test sound...")
-        gen = AudioGenerator(sample_rate=16000)
-        waveform = gen.generate_sequence(duration=3.0, bpm=120) # (1, 48000)
+        gen = AudioGenerator(sample_rate=sample_rate)
+        duration = config.get('data', {}).get('duration', 3.0)
+        waveform = gen.generate_sequence(duration=duration, bpm=120) # (1, 48000)
         
     # Ensure correct length
-    target_len = 48000
+    target_len = int(sample_rate * config.get('data', {}).get('duration', 3.0))
     if waveform.shape[1] > target_len:
         waveform = waveform[:, :target_len]
     elif waveform.shape[1] < target_len:
@@ -66,14 +77,15 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
     
     # 4. Sampling Loop
     print("Sampling...")
-    scheduler = NoiseScheduler(num_timesteps=50, device=device)
+    timesteps = config.get('diffusion', {}).get('timesteps', 50)
+    scheduler = NoiseScheduler(num_timesteps=timesteps, device=device)
     
     # Batch generation for speed
     batch_size = num_frames
     audio_batch = waveform.repeat(batch_size, 1, 1) # (90, 1, 48000)
     
     # Start with pure noise
-    shape = (batch_size, 256, 8, 8)
+    shape = (batch_size, latent_dim, latent_spatial_size, latent_spatial_size)
     
     # Sample
     latents = scheduler.sample(model, audio_batch, shape) # (90, 256, 8, 8)
@@ -96,7 +108,8 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
     video_uint8 = (video_tensor * 255).byte() # (T, C, H, W)
     
     from torchcodec.encoders import VideoEncoder
-    encoder = VideoEncoder(video_uint8, frame_rate=30)
+    fps = config.get('data', {}).get('fps', 30)
+    encoder = VideoEncoder(video_uint8, frame_rate=fps)
     temp_video_path = output_path.replace(".mp4", "_temp.mp4")
     encoder.to_file(temp_video_path)
     
@@ -105,7 +118,7 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
     audio_to_save = waveform.squeeze(0).cpu() # (1, T)
     
     import torchaudio
-    torchaudio.save(temp_audio_path, audio_to_save, 16000)
+    torchaudio.save(temp_audio_path, audio_to_save, sample_rate)
     
     # Combine with ffmpeg
     import subprocess

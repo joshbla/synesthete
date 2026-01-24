@@ -4,38 +4,42 @@ project:
 
 data:
   train_dir: "data/train"
-  num_samples: 50 # Reduced from 100 for faster iteration
+  num_samples: 100 # Scaled up
   sample_rate: 16000
   duration: 3.0
-  height: 128
-  width: 128
+  height: 256
+  width: 256
   fps: 30
 
 model:
-  frame_size: [128, 128]
+  frame_size: [256, 256]
   # 3.0 seconds * 30 fps = 90 frames
   num_frames: 90
+  latent_dim: 256
+  d_model: 512
   
 train:
   output_dir: "models"
-  epochs: 20
+  epochs: 40
   batch_size: 32
   learning_rate: 0.0001
   save_name: "model_latest.pth"
-  samples_per_epoch: 100 # Increased for 5 min run
-
+  samples_per_epoch: 200 # Scaled up
+  
 vae:
-  epochs: 10
-  samples_per_epoch: 100 # Increased for 5 min run
+  epochs: 20
+  samples_per_epoch: 200 # Scaled up
   learning_rate: 0.0001
   batch_size: 64
+  kld_weight: 0.1
 
 diffusion:
-  epochs: 20
-  samples_per_epoch: 100 # Increased for 5 min run
+  epochs: 40
+  samples_per_epoch: 200 # Scaled up
   learning_rate: 0.0001
   batch_size: 32
   timesteps: 50
+  frames_per_clip: 10
 
 tracker:
   enabled: true
