@@ -12,7 +12,8 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from vae import VAE
-from diffusion import DiffusionTransformer
+from diffusion import DiffusionTransformer, NoiseScheduler
+from audio_gen import AudioGenerator
 from visualizers import get_random_visualizer
 from tracker import ExperimentTracker
 from utils import load_config
@@ -24,6 +25,7 @@ class LatentDiffusionDataset(IterableDataset):
         self.samples_per_epoch = samples_per_epoch
         self.vae = vae
         self.device = device
+        self.audio_gen = AudioGenerator(sample_rate=16000) # Match model SR
         
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -37,7 +39,9 @@ class LatentDiffusionDataset(IterableDataset):
             
         for _ in range(iter_start, iter_end):
             # 1. Generate Data
-            waveform = torch.randn(1, 48000) # Random audio for now (visualizers are random anyway)
+            # Use procedural audio instead of random noise
+            waveform = self.audio_gen.generate_sequence(duration=3.0) # (1, 48000)
+            
             # Ideally we want real audio-viz pairs, but our current viz is random.
             # To make the model learn "Audio -> Viz", we need the viz to be reactive.
             # Our visualizers ARE reactive to the waveform passed in.
@@ -52,11 +56,7 @@ class LatentDiffusionDataset(IterableDataset):
                 mu, log_var = self.vae.encode(frames)
                 # We use the mean (mu) as the ground truth latent for diffusion
                 # We could sample, but mean is cleaner for training targets
-                latents = mu # (90, 256)
-                
-                # Reshape back to spatial for the diffusion model
-                # VAE encode flattens, but we know it came from 8x8
-                latents = latents.view(90, 256, 8, 8)
+                latents = mu # (90, 256, 8, 8)
             
             # 3. Yield pairs
             # We yield (Audio, Latent_Frame)
@@ -99,26 +99,10 @@ class DiffusionTrainer:
         self.tracker = ExperimentTracker(config)
         
         # 4. Noise Schedule
-        self.num_timesteps = 1000
-        self.betas = torch.linspace(0.0001, 0.02, self.num_timesteps).to(self.device)
-        self.alphas = 1.0 - self.betas
-        self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
-
-    def add_noise(self, x_0, t):
-        """
-        x_0: Clean latents
-        t: Timesteps
-        Returns: x_t (Noisy), noise (The added noise)
-        """
-        sqrt_alphas_cumprod = torch.sqrt(self.alphas_cumprod[t])[:, None, None, None]
-        sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - self.alphas_cumprod[t])[:, None, None, None]
-        
-        noise = torch.randn_like(x_0)
-        x_t = sqrt_alphas_cumprod * x_0 + sqrt_one_minus_alphas_cumprod * noise
-        return x_t, noise
+        self.scheduler = NoiseScheduler(num_timesteps=50, device=self.device)
 
     def train(self, epochs=10):
-        dataset = LatentDiffusionDataset(self.vae, samples_per_epoch=100, device=self.device)
+        dataset = LatentDiffusionDataset(self.vae, samples_per_epoch=20, device=self.device)
         dataloader = DataLoader(dataset, batch_size=32)
         
         self.model.train()
@@ -134,10 +118,10 @@ class DiffusionTrainer:
                 B = latents.shape[0]
                 
                 # Sample random timesteps
-                t = torch.randint(0, self.num_timesteps, (B,), device=self.device).long()
+                t = torch.randint(0, self.scheduler.num_timesteps, (B,), device=self.device).long()
                 
                 # Add noise
-                noisy_latents, noise = self.add_noise(latents, t)
+                noisy_latents, noise = self.scheduler.add_noise(latents, t)
                 
                 # Predict noise
                 self.optimizer.zero_grad()
@@ -171,6 +155,9 @@ class DiffusionTrainer:
             
         self.tracker.finish()
 
-if __name__ == "__main__":
+def train_diffusion(epochs=10):
     trainer = DiffusionTrainer()
-    trainer.train()
+    trainer.train(epochs=epochs)
+
+if __name__ == "__main__":
+    train_diffusion()

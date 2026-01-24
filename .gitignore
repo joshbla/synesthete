@@ -26,6 +26,8 @@ data/
 # Trained models
 models/
 !models/.gitkeep
+diffusion_checkpoints/
+vae_checkpoints/
 
 # Outputs
 *.mp4

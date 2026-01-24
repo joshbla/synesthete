@@ -8,7 +8,7 @@ class VAE(nn.Module):
     
     Architecture:
     - Encoder: 128x128x3 -> 64x64 -> 32x32 -> 16x16 -> 8x8 (Latent)
-    - Latent Dim: 256 (represented as mean/logvar)
+    - Latent Dim: 256 (represented as mean/logvar) - SPATIAL (8x8x256)
     - Decoder: 8x8 -> 16x16 -> 32x32 -> 64x64 -> 128x128x3
     """
     def __init__(self, in_channels=3, latent_dim=256):
@@ -40,21 +40,19 @@ class VAE(nn.Module):
             nn.LeakyReLU(),
         )
         
-        # Flatten size: 256 channels * 8 * 8 = 16384
-        self.flatten_size = 256 * 8 * 8
-        
-        # Latent projections
-        self.fc_mu = nn.Linear(self.flatten_size, latent_dim)
-        self.fc_var = nn.Linear(self.flatten_size, latent_dim)
+        # Latent projections (Spatial)
+        # Input is 256 channels, Output is latent_dim channels
+        self.conv_mu = nn.Conv2d(256, latent_dim, kernel_size=1)
+        self.conv_var = nn.Conv2d(256, latent_dim, kernel_size=1)
         
         # ========================
         # Decoder
         # ========================
-        self.decoder_input = nn.Linear(latent_dim, self.flatten_size)
+        # Input: (B, latent_dim, 8, 8)
         
         self.decoder = nn.Sequential(
             # 8 -> 16
-            nn.ConvTranspose2d(256, 128, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose2d(latent_dim, 128, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(128),
             nn.LeakyReLU(),
             
@@ -75,10 +73,9 @@ class VAE(nn.Module):
 
     def encode(self, x):
         """Returns mu, log_var"""
-        x = self.encoder(x)
-        x = x.flatten(start_dim=1)
-        mu = self.fc_mu(x)
-        log_var = self.fc_var(x)
+        x = self.encoder(x) # (B, 256, 8, 8)
+        mu = self.conv_mu(x) # (B, latent_dim, 8, 8)
+        log_var = self.conv_var(x) # (B, latent_dim, 8, 8)
         # Clamp log_var to prevent explosion
         log_var = torch.clamp(log_var, -10, 10)
         return mu, log_var
@@ -90,9 +87,8 @@ class VAE(nn.Module):
         return mu + eps * std
 
     def decode(self, z):
-        x = self.decoder_input(z)
-        x = x.view(-1, 256, 8, 8)
-        x = self.decoder(x)
+        # z: (B, latent_dim, 8, 8)
+        x = self.decoder(z)
         return x
 
     def forward(self, x):

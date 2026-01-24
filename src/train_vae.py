@@ -70,7 +70,7 @@ def train_vae():
     EPOCHS = 5
     LR = 1e-4 # Reduced LR
     LATENT_DIM = 256
-    SAMPLES_PER_EPOCH = 50 # Reduced for speed
+    SAMPLES_PER_EPOCH = 20 # Reduced for speed
     
     model = VAE(latent_dim=LATENT_DIM).to(device)
     optimizer = optim.Adam(model.parameters(), lr=LR)

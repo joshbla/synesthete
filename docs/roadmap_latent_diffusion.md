@@ -44,19 +44,19 @@ graph LR
 - [x] Create VAE training loop (`src/train_vae.py`).
 - [x] Train VAE to reconstruct `Pulse`, `Spectrum`, and `Waveform` visualizers.
 
-### Phase 2: Diffusion Transformer (The Generator) - 🚧 NEXT
-- [ ] Create `DiffusionTransformer` model class.
+### Phase 2: Diffusion Transformer (The Generator) - ✅ DONE
+- [x] Create `DiffusionTransformer` model class.
     - Input: Noisy Latents + Audio Embeddings.
     - Output: Predicted Noise (or Denoised Latent).
-- [ ] Implement Diffusion Noise Scheduler (DDPM or DDIM).
-- [ ] Create `train_diffusion.py`.
+- [x] Implement Diffusion Noise Scheduler (DDPM or DDIM).
+- [x] Create `train_diffusion.py`.
     - Freezes the VAE.
     - Encodes ground-truth video into latents.
     - Adds noise to latents.
     - Trains Transformer to remove noise based on audio.
 
-### Phase 3: Inference & Sampling
-- [ ] Implement Sampling Loop.
+### Phase 3: Inference & Sampling - ✅ DONE
+- [x] Implement Sampling Loop.
     - Start with pure Gaussian noise.
     - Iteratively denoise using Audio conditioning.
     - Decode final latent using VAE.

@@ -15,43 +15,50 @@ The ultimate goal is to create a model capable of generating video content that 
 *   [**Infrastructure**](docs/infrastructure.md): Details on experiment tracking, video backend, and tooling.
 *   [**Standards**](docs/standards.md): Guidelines for documentation and project maintenance.
 
-## Current Status: Hybrid CNN + Transformer Architecture
+## Current Status: Latent Diffusion Architecture
 
-This repository implements a modern hybrid architecture combining the strengths of CNNs and Transformers:
+This repository implements a **Latent Diffusion** architecture to solve the "regression to the mean" problem (gray sludge) inherent in direct regression models.
 
 - **Environment**: Managed by `uv`, optimized for Apple Silicon (MPS acceleration).
 - **Core Libraries**: PyTorch, Torchaudio, TorchCodec.
-- **Data Engine**: An "Infinite" `IterableDataset` that generates procedural audio-video pairs on-the-fly during training, eliminating storage bottlenecks and overfitting.
+- **Data Engine**: An "Infinite" `IterableDataset` that generates procedural audio-video pairs on-the-fly.
 
 ### Model Architecture
 
-The `AudioToVideoNet` uses a three-stage hybrid architecture:
+The system consists of two trained models:
+
+1.  **Spatial VAE ("The Eye")**:
+    -   Compresses 128x128 video frames into **8x8x256 spatial latents**.
+    -   Ensures generated images are sharp and valid.
+
+2.  **Diffusion Transformer ("The Brain")**:
+    -   Takes random noise and "denoises" it into valid latents, conditioned on audio.
+    -   Uses a Transformer backbone with Cross-Attention to audio embeddings.
 
 ```
-Audio Waveform (48k samples, 3s @ 16kHz)
+Audio Waveform (48k samples)
          ↓
 ┌─────────────────────────────────────┐
-│  CNN Audio Encoder                  │  ← Efficient local feature extraction
-│  (4 conv layers with GELU + BN)     │    Captures beats, attacks, harmonics
+│  Audio Encoder (CNN)                │
 └─────────────────────────────────────┘
+         ↓
+┌─────────────────────────────────────┐      ┌──────────────┐
+│  Diffusion Transformer              │  ←   │ Random Noise │
+│  (Denoises Latents)                 │      └──────────────┘
+└─────────────────────────────────────┘
+         ↓
+    Latent Code (8x8x256)
          ↓
 ┌─────────────────────────────────────┐
-│  Transformer Temporal Module        │  ← Long-range temporal modeling
-│  (4 layers, 8 heads, positional enc)│    Connects musical phrases across time
+│  VAE Decoder (CNN)                  │
 └─────────────────────────────────────┘
          ↓
-┌─────────────────────────────────────┐
-│  CNN Frame Decoder                  │  ← Spatial generation with coherence
-│  (Transposed convolutions 8→128px)  │    Upsamples to full resolution
-└─────────────────────────────────────┘
-         ↓
-Video Frames (90 frames, 128×128 RGB)
+Video Frames (128x128 RGB)
 ```
 
-**Why Hybrid?** This architecture follows modern best practices from projects like Stable Audio, MusicGen, and AudioLDM:
-- CNNs excel at local pattern extraction (translation equivariant, computationally efficient)
-- Transformers excel at long-range dependencies (connecting a beat at t=0.5s to visuals at t=2.5s)
-- The combination provides both efficiency and expressivity
+**Why Latent Diffusion?**
+- **Creativity**: Instead of averaging all possible outputs (sludge), diffusion probabilistically picks *one* valid, sharp output.
+- **Efficiency**: The transformer operates on small 8x8 latents rather than full 128x128 pixels.
 
 ## Getting Started
 
@@ -82,7 +89,7 @@ We are following a "crawl, walk, run" strategy. Current progress and next steps:
 - [x] **Temporal Awareness**: Transformer encoder with positional encoding provides long-range temporal modeling.
 - [ ] **Pre-trained Embeddings**: Transition from raw audio waveforms to using embeddings from industry-standard models (like Wav2Vec2, CLAP, or Whisper) to leverage semantic understanding of sound.
 - [ ] **Evaluation Metrics**: Implement automated metrics (e.g., Audio-Visual Sync scores) to objectively measure model performance beyond visual inspection.
-- [ ] **Latent Diffusion**: Explore diffusion-based decoders for higher quality frame generation.
+- [x] **Latent Diffusion**: Explore diffusion-based decoders for higher quality frame generation.
 
 ## Project Structure
 
@@ -92,8 +99,13 @@ We are following a "crawl, walk, run" strategy. Current progress and next steps:
     - `visualizers/`: Package containing algorithmic video generators.
     - `data.py`: Dataset creation and management.
     - `model.py`: PyTorch neural network architecture (Hybrid CNN + Transformer).
-    - `train.py`: Training loop.
+    - `diffusion.py`: Diffusion Transformer and Noise Scheduler.
+    - `vae.py`: Variational Autoencoder (Spatial).
+    - `train.py`: Training loop for main model.
+    - `train_vae.py`: Training loop for VAE.
+    - `train_diffusion.py`: Training loop for Diffusion.
     - `inference.py`: Video generation from audio.
+    - `inference_diffusion.py`: Inference for Diffusion model.
     - `tracker.py`: W&B experiment tracking wrapper.
 - `run_pipeline.py`: Main orchestrator script.
 - `favorites/`: Curated output samples.
