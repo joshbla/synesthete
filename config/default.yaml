@@ -18,10 +18,24 @@ model:
   
 train:
   output_dir: "models"
-  epochs: 10 # Reduced from 20 for faster iteration
-  batch_size: 8
-  learning_rate: 0.001
+  epochs: 20
+  batch_size: 32
+  learning_rate: 0.0001
   save_name: "model_latest.pth"
+  samples_per_epoch: 100 # Increased for 5 min run
+
+vae:
+  epochs: 10
+  samples_per_epoch: 100 # Increased for 5 min run
+  learning_rate: 0.0001
+  batch_size: 64
+
+diffusion:
+  epochs: 20
+  samples_per_epoch: 100 # Increased for 5 min run
+  learning_rate: 0.0001
+  batch_size: 32
+  timesteps: 50
 
 tracker:
   enabled: true

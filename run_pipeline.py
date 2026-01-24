@@ -44,7 +44,7 @@ def main():
         print(f"\n[Step 2] Found existing Diffusion checkpoint at {diff_path}. Skipping training.", flush=True)
     else:
         print("\n[Step 2] Training Diffusion Transformer (The Brain)...", flush=True)
-        train_diffusion(epochs=10) # Using default epochs for now
+        train_diffusion() # Config controls epochs now
     
     # 3. Inference
     # This generates the final video using the trained Brain and Eye.

@@ -66,11 +66,11 @@ def train_vae():
     tracker = ExperimentTracker(config)
     
     # Config
-    BATCH_SIZE = 64
-    EPOCHS = 5
-    LR = 1e-4 # Reduced LR
+    BATCH_SIZE = config.get('vae', {}).get('batch_size', 64)
+    EPOCHS = config.get('vae', {}).get('epochs', 10)
+    LR = config.get('vae', {}).get('learning_rate', 1e-4)
     LATENT_DIM = 256
-    SAMPLES_PER_EPOCH = 20 # Reduced for speed
+    SAMPLES_PER_EPOCH = config.get('vae', {}).get('samples_per_epoch', 100)
     
     model = VAE(latent_dim=LATENT_DIM).to(device)
     optimizer = optim.Adam(model.parameters(), lr=LR)

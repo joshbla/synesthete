@@ -21,3 +21,22 @@ We do **not** create separate documentation files for:
 *   **`README.md`**: The entry point. Contains the high-level vision, quickstart guide, and links to all specific documentation. It should be the "map" of the project.
 *   **`docs/`**:
     *   `*.md`: Topic-specific deep dives. File names should be descriptive (e.g., `audio_inputs.md`, `data_engine.md`).
+
+## Artifact Management
+
+We maintain a curated collection of successful model outputs in the `favorites/` directory.
+
+### Naming Convention
+All favorite files must follow this format to ensure chronological sorting:
+`YYYY-MM-DD_HH-MM-SS_{description}.mp4`
+
+Example: `2026-01-23_17-30-00_latent_diffusion_first_success.mp4`
+
+### How to Save a Favorite
+Use the helper script to save the current `output_test.mp4`:
+
+```bash
+uv run python scripts/save_favorite.py "description of the run"
+```
+
+This will automatically timestamp and copy the file to the `favorites/` folder.

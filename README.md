@@ -19,6 +19,12 @@ The ultimate goal is to create a model capable of generating video content that 
 
 This repository implements a **Latent Diffusion** architecture to solve the "regression to the mean" problem (gray sludge) inherent in direct regression models.
 
+**Success**: The model now successfully generates distinct, sharp, and novel visuals, breaking free from the blurry averaging of previous iterations. It generalizes well across the latent space, producing coherent shapes and colors.
+
+**Limitations**:
+- **Simple Audio**: The current training data uses basic procedural audio.
+- **Rhythm**: The model does not yet exhibit strong beat synchronization or rhythmic reactivity.
+
 - **Environment**: Managed by `uv`, optimized for Apple Silicon (MPS acceleration).
 - **Core Libraries**: PyTorch, Torchaudio, TorchCodec.
 - **Data Engine**: An "Infinite" `IterableDataset` that generates procedural audio-video pairs on-the-fly.

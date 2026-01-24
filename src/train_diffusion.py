@@ -75,6 +75,12 @@ class DiffusionTrainer:
         self.device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
         print(f"Training on {self.device}")
         
+        # Load config
+        try:
+            self.config = load_config()
+        except:
+            self.config = {}
+        
         # 1. Load VAE (Frozen)
         self.vae = VAE(latent_dim=256).to(self.device)
         try:
@@ -89,21 +95,25 @@ class DiffusionTrainer:
             
         # 2. Init Diffusion Model
         self.model = DiffusionTransformer(latent_dim=256, d_model=512).to(self.device)
-        self.optimizer = optim.AdamW(self.model.parameters(), lr=1e-4)
+        lr = self.config.get('diffusion', {}).get('learning_rate', 1e-4)
+        self.optimizer = optim.AdamW(self.model.parameters(), lr=lr)
         
         # 3. Tracker
-        try:
-            config = load_config()
-        except:
-            config = {}
-        self.tracker = ExperimentTracker(config)
+        self.tracker = ExperimentTracker(self.config)
         
         # 4. Noise Schedule
-        self.scheduler = NoiseScheduler(num_timesteps=50, device=self.device)
+        timesteps = self.config.get('diffusion', {}).get('timesteps', 50)
+        self.scheduler = NoiseScheduler(num_timesteps=timesteps, device=self.device)
 
-    def train(self, epochs=10):
-        dataset = LatentDiffusionDataset(self.vae, samples_per_epoch=20, device=self.device)
-        dataloader = DataLoader(dataset, batch_size=32)
+    def train(self, epochs=None):
+        if epochs is None:
+            epochs = self.config.get('diffusion', {}).get('epochs', 20)
+            
+        samples_per_epoch = self.config.get('diffusion', {}).get('samples_per_epoch', 100)
+        batch_size = self.config.get('diffusion', {}).get('batch_size', 32)
+        
+        dataset = LatentDiffusionDataset(self.vae, samples_per_epoch=samples_per_epoch, device=self.device)
+        dataloader = DataLoader(dataset, batch_size=batch_size)
         
         self.model.train()
         
@@ -155,7 +165,7 @@ class DiffusionTrainer:
             
         self.tracker.finish()
 
-def train_diffusion(epochs=10):
+def train_diffusion(epochs=None):
     trainer = DiffusionTrainer()
     trainer.train(epochs=epochs)
 

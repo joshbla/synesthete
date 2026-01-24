@@ -60,3 +60,10 @@ graph LR
     - Start with pure Gaussian noise.
     - Iteratively denoise using Audio conditioning.
     - Decode final latent using VAE.
+
+## Next Steps: Audio Reactivity
+
+While the visual quality is now high, the temporal synchronization with audio is basic.
+
+- [ ] **Complex Audio**: Train on more complex, rhythmic audio sources.
+- [ ] **Beat Sync**: Modify the architecture or loss function to enforce tighter audio-visual synchronization (e.g., onset detection loss).
