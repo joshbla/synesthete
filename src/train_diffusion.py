@@ -14,6 +14,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from vae import VAE
 from diffusion import DiffusionTransformer, NoiseScheduler
 from audio_gen import AudioGenerator
+from audio_features import compute_audio_timeline
+from audio_features import audio_feature_dim
 from visualizers import get_random_visualizer
 from tracker import ExperimentTracker
 from utils import load_config, get_device
@@ -29,8 +31,12 @@ class LatentDiffusionDataset(IterableDataset):
         self.sample_rate = config.get('data', {}).get('sample_rate', 16000)
         self.audio_gen = AudioGenerator(sample_rate=self.sample_rate)
         self.fps = self.config.get('data', {}).get('fps', 30)
-        self.audio_window_seconds = self.config.get('diffusion', {}).get('audio_window_seconds', 0.25)
-        self.audio_window_samples = max(16, int(self.audio_window_seconds * self.sample_rate))
+        self.audio_feature_n_fft = int(self.config.get('diffusion', {}).get('audio_feature_n_fft', 512))
+        self.audio_feature_num_bands = int(self.config.get('diffusion', {}).get('audio_feature_num_bands', 8))
+        # Use local temporal context in feature space (neighboring frames).
+        # 0 means only the current frame's feature vector is used.
+        self.audio_feature_context = int(self.config.get('diffusion', {}).get('audio_feature_context', 0))
+        self.audio_feature_T = 2 * self.audio_feature_context + 1
         
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -56,6 +62,7 @@ class LatentDiffusionDataset(IterableDataset):
             height = self.config.get('data', {}).get('height', 128)
             width = self.config.get('data', {}).get('width', 128)
             frames = viz.render(waveform, fps=self.fps, height=height, width=width, sample_rate=self.sample_rate)
+            num_frames = frames.size(0)
             
             # 2. Encode to Latents
             # We process in batches to save memory if needed, but 90 frames is small
@@ -65,29 +72,30 @@ class LatentDiffusionDataset(IterableDataset):
                 # We use the mean (mu) as the ground truth latent for diffusion
                 # We could sample, but mean is cleaner for training targets
                 latents = mu # (90, 256, 8, 8)
+                # 2b. Compute audio features aligned to frames
+                audio_feats = compute_audio_timeline(
+                    waveform,
+                    sample_rate=self.sample_rate,
+                    fps=self.fps,
+                    num_frames=num_frames,
+                    n_fft=self.audio_feature_n_fft,
+                    num_bands=self.audio_feature_num_bands,
+                )  # (T, F)
             
             # 3. Yield pairs
-            # We yield (Audio_Window_for_Frame_i, Latent_Frame_i).
-            # This makes the conditioning identifiable: frame i is paired with its aligned audio slice.
+            # We yield (Audio_Features_for_Frame_i, Latent_Frame_i).
+            # Conditioning is identifiable: frame i is paired with its aligned audio feature vector (optionally with neighbor context).
             indices = torch.randperm(frames.size(0))
             frames_per_clip = self.config.get('diffusion', {}).get('frames_per_clip', 10)
             for i in indices[:frames_per_clip]:
-                # Center an audio window on this frame's time index.
-                # Map frame i -> sample index via fps.
-                center_sample = int((i + 0.5) * self.sample_rate / self.fps)
-                half = self.audio_window_samples // 2
-                start = center_sample - half
-                end = start + self.audio_window_samples
-
-                # Slice with padding
-                left_pad = max(0, -start)
-                right_pad = max(0, end - waveform.shape[1])
-                start = max(0, start)
-                end = min(waveform.shape[1], end)
-                chunk = waveform[:, start:end]
-                if left_pad > 0 or right_pad > 0:
-                    chunk = nn.functional.pad(chunk, (left_pad, right_pad))
-                yield chunk, latents[i]
+                # Build a fixed-length context window in feature space: (T_ctx, F)
+                # Pad by edge-replication so batching works cleanly.
+                ctx = []
+                for j in range(i - self.audio_feature_context, i + self.audio_feature_context + 1):
+                    jj = min(max(j, 0), num_frames - 1)
+                    ctx.append(audio_feats[jj])
+                feat_ctx = torch.stack(ctx, dim=0)  # (T_ctx, F)
+                yield feat_ctx, latents[i]
 
 class DiffusionTrainer:
     def __init__(self):
@@ -118,7 +126,13 @@ class DiffusionTrainer:
         height = self.config.get('data', {}).get('height', 128)
         # VAE downsamples by 16 (4 layers of stride 2)
         latent_spatial_size = height // 16 
-        self.model = DiffusionTransformer(latent_dim=latent_dim, d_model=d_model, latent_spatial_size=latent_spatial_size).to(self.device)
+        num_bands = int(self.config.get('diffusion', {}).get('audio_feature_num_bands', 8))
+        self.model = DiffusionTransformer(
+            latent_dim=latent_dim,
+            d_model=d_model,
+            latent_spatial_size=latent_spatial_size,
+            audio_feature_dim=audio_feature_dim(num_bands),
+        ).to(self.device)
         lr = self.config.get('diffusion', {}).get('learning_rate', 1e-4)
         self.optimizer = optim.AdamW(self.model.parameters(), lr=lr)
         

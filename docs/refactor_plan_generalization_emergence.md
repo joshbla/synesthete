@@ -177,3 +177,40 @@ If you only do two things first:
 
 …you will already see a big step in “generalizes + doesn’t collapse,” even before expanding the visualizer family.
 
+---
+
+## Progress / status updates
+
+This section tracks what has been implemented so far, so the plan stays a “living” doc.
+
+### Update (2026-02-03)
+
+- **Phase 0 — Fix contracts**
+  - **Completed**: Removed the hardcoded 16kHz assumption in visualizer chunking by threading `sample_rate` through the visualizer API and callers.
+  - **Notes**: This makes timing/chunking correct across config changes and prevents subtle alignment bugs.
+
+- **Phase 1 — Make conditioning identifiable (time alignment)**
+  - **Completed**: Diffusion conditioning is now an explicit **frame-aligned audio feature timeline** (one feature vector per frame), with optional neighbor context.
+  - **What changed**:
+    - Training/inference compute per-frame audio features aligned to the same frame chunking concept the visualizers use.
+    - Diffusion is conditioned on a fixed-shape tensor `(T_ctx, F)` per frame, so batching is stable as you scale.
+    - Audio conditioning includes positional encoding so ordering within the context window matters.
+  - **Config added**:
+    - `diffusion.audio_feature_n_fft`, `diffusion.audio_feature_num_bands`, `diffusion.audio_feature_context`
+
+- **Phase 2 — Factorize variation (style)**
+  - **Not started**: No clip-level continuous style latent or style/audio dropout yet.
+
+- **Phase 3 — Compositional visualizer programs**
+  - **Not started**: Visualizer variety is still driven by a small set of monolithic renderers.
+
+- **Phase 4 — Temporal coherence**
+  - **Not started**: Frames are still sampled i.i.d. (even though conditioning is now time-aligned per frame).
+
+- **Phase 5 — Detect/punish “ignoring audio”**
+  - **Not started**: No automated “audio shuffle test,” mismatch pressure, or diversity probes yet.
+
+### Practical implication for existing checkpoints
+
+These Phase 1 changes alter the **conditioning distribution** for diffusion (raw full-clip conditioning → frame-aligned feature conditioning). Existing diffusion weights trained under the old scheme are expected to degrade under the new conditioning; retraining diffusion is the intended next step.
+

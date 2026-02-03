@@ -10,6 +10,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from vae import VAE
 from diffusion import DiffusionTransformer, NoiseScheduler
 from audio_gen import AudioGenerator
+from audio_features import compute_audio_timeline, audio_feature_dim
 from visualizers import get_random_visualizer
 from utils import load_config, get_device
 
@@ -35,7 +36,13 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
     d_model = config.get('model', {}).get('d_model', 512)
     height = config.get('data', {}).get('height', 128)
     latent_spatial_size = height // 16
-    model = DiffusionTransformer(latent_dim=latent_dim, d_model=d_model, latent_spatial_size=latent_spatial_size).to(device)
+    num_bands = int(config.get('diffusion', {}).get('audio_feature_num_bands', 8))
+    model = DiffusionTransformer(
+        latent_dim=latent_dim,
+        d_model=d_model,
+        latent_spatial_size=latent_spatial_size,
+        audio_feature_dim=audio_feature_dim(num_bands),
+    ).to(device)
     try:
         model.load_state_dict(torch.load(model_path, map_location=device))
         print(f"Loaded Diffusion checkpoint from {model_path}")
@@ -80,30 +87,29 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
     timesteps = config.get('diffusion', {}).get('timesteps', 50)
     scheduler = NoiseScheduler(num_timesteps=timesteps, device=device)
 
-    # Build per-frame aligned audio windows, then sample a batch of frames.
-    # This matches training: each target frame is conditioned on its audio slice.
+    # Compute a per-frame audio feature timeline and condition each frame on
+    # a fixed-length local context window in feature space.
     fps = config.get('data', {}).get('fps', 30)
-    audio_window_seconds = config.get('diffusion', {}).get('audio_window_seconds', 0.25)
-    audio_window_samples = max(16, int(audio_window_seconds * sample_rate))
+    n_fft = int(config.get('diffusion', {}).get('audio_feature_n_fft', 512))
+    context = int(config.get('diffusion', {}).get('audio_feature_context', 0))
+    audio_feats = compute_audio_timeline(
+        waveform.squeeze(0).cpu(),  # (1, N) on CPU is fine; we'll move to device after
+        sample_rate=sample_rate,
+        fps=fps,
+        num_frames=num_frames,
+        n_fft=n_fft,
+        num_bands=num_bands,
+    )  # (T, F)
 
-    audio_windows = []
-    half = audio_window_samples // 2
+    # Build (T, T_ctx, F) then treat each frame as a batch item: (T, T_ctx, F)
+    ctx_feats = []
     for i in range(num_frames):
-        center_sample = int((i + 0.5) * sample_rate / fps)
-        start = center_sample - half
-        end = start + audio_window_samples
-
-        left_pad = max(0, -start)
-        right_pad = max(0, end - waveform.shape[-1])
-        start = max(0, start)
-        end = min(waveform.shape[-1], end)
-
-        chunk = waveform[:, :, start:end]  # (1, 1, S)
-        if left_pad > 0 or right_pad > 0:
-            chunk = nn.functional.pad(chunk, (left_pad, right_pad))
-        audio_windows.append(chunk)
-
-    audio_batch = torch.cat(audio_windows, dim=0)  # (T, 1, T_audio_window)
+        ctx = []
+        for j in range(i - context, i + context + 1):
+            jj = min(max(j, 0), num_frames - 1)
+            ctx.append(audio_feats[jj])
+        ctx_feats.append(torch.stack(ctx, dim=0))
+    audio_batch = torch.stack(ctx_feats, dim=0).to(device)  # (T, T_ctx, F)
     batch_size = audio_batch.shape[0]
     
     # Start with pure noise

@@ -39,9 +39,12 @@ diffusion:
   learning_rate: 0.0001
   batch_size: 32
   timesteps: 50
-  # Per-frame audio conditioning window length (seconds).
-  # Each video frame is conditioned on an audio slice centered at that frame's timestamp.
-  audio_window_seconds: 0.25
+  # Phase 1 conditioning (frame-aligned audio feature timeline)
+  # Each target frame is conditioned on its aligned audio feature vector, optionally
+  # with a small neighbor context window (audio_feature_context).
+  audio_feature_n_fft: 512
+  audio_feature_num_bands: 8
+  audio_feature_context: 0
   frames_per_clip: 10
 
 tracker:

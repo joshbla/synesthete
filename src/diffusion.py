@@ -36,7 +36,7 @@ class NoiseScheduler:
     def sample(self, model, audio, shape):
         """
         Sample from the model.
-        audio: (B, 1, T_audio_window)
+        audio: (B, T_audio, F) frame-aligned audio features
         shape: (B, C, H, W) -> (B, 256, 8, 8)
         """
         model.eval()
@@ -77,17 +77,18 @@ class DiffusionTransformer(nn.Module):
     Inputs:
     - x: Noisy Latents (B, 256, 8, 8)
     - t: Timesteps (B,)
-    - audio: Raw Audio window (B, 1, T_audio_window)
+    - audio: Frame-aligned audio features (B, T_audio, F)
     
     Output:
     - noise_pred: Predicted Noise (B, 256, 8, 8)
     """
-    def __init__(self, latent_dim=256, d_model=512, nhead=8, num_layers=6, latent_spatial_size=8):
+    def __init__(self, latent_dim=256, d_model=512, nhead=8, num_layers=6, latent_spatial_size=8, audio_feature_dim=13):
         super().__init__()
         
         self.latent_dim = latent_dim
         self.d_model = d_model
         self.latent_spatial_size = latent_spatial_size
+        self.audio_feature_dim = audio_feature_dim
         num_tokens = latent_spatial_size * latent_spatial_size
         
         # 1. Time Embedding
@@ -98,25 +99,18 @@ class DiffusionTransformer(nn.Module):
             nn.Linear(d_model, d_model),
         )
         
-        # 2. Audio Encoder (Same as AudioToVideoNet)
-        # Input: (B, 1, 48000) -> Output: (B, d_model, T_compressed)
-        self.audio_encoder = nn.Sequential(
-            nn.Conv1d(1, 32, kernel_size=80, stride=4, padding=38),
+        # 2. Audio conditioning projection
+        # Input: (B, T_audio, F) -> Output: (B, T_audio, d_model)
+        # Phase 1 goal is stable, time-aligned conditioning (not raw waveform encoding).
+        self.audio_proj = nn.Sequential(
+            nn.LayerNorm(audio_feature_dim),
+            nn.Linear(audio_feature_dim, d_model),
             nn.GELU(),
-            nn.BatchNorm1d(32),
-            
-            nn.Conv1d(32, 64, kernel_size=4, stride=4, padding=0),
-            nn.GELU(),
-            nn.BatchNorm1d(64),
-            
-            nn.Conv1d(64, 128, kernel_size=4, stride=4, padding=0),
-            nn.GELU(),
-            nn.BatchNorm1d(128),
-            
-            nn.Conv1d(128, d_model, kernel_size=4, stride=4, padding=0),
-            nn.GELU(),
-            nn.BatchNorm1d(d_model),
+            nn.Linear(d_model, d_model),
         )
+
+        # Positional encoding so the model can use ordering in T_audio
+        self.audio_positional_encoding = PositionalEncoding(d_model=d_model, max_len=512, dropout=0.0)
         
         # 3. Latent Input Projection
         # Flatten spatial grid to tokens
@@ -135,7 +129,7 @@ class DiffusionTransformer(nn.Module):
         """
         x: (B, latent_dim, H, W)
         t: (B,)
-        audio: (B, 1, T_audio_window)
+        audio: (B, T_audio, F)
         """
         B = x.shape[0]
         
@@ -143,9 +137,16 @@ class DiffusionTransformer(nn.Module):
         t_emb = self.time_mlp(t) # (B, d_model)
         t_emb = t_emb.unsqueeze(1) # (B, 1, d_model)
         
-        # 2. Embed Audio
-        audio_feats = self.audio_encoder(audio) # (B, d_model, T_seq)
-        audio_feats = audio_feats.permute(0, 2, 1) # (B, T_seq, d_model)
+        # 2. Embed Audio features
+        if audio.ndim != 3:
+            raise ValueError(f"Expected audio features shape (B, T_audio, F), got {tuple(audio.shape)}")
+        if audio.shape[-1] != self.audio_feature_dim:
+            raise ValueError(
+                f"Expected audio feature dim {self.audio_feature_dim}, got {audio.shape[-1]}. "
+                f"Check diffusion.audio_feature_num_bands / model init."
+            )
+        audio_feats = self.audio_proj(audio)  # (B, T_audio, d_model)
+        audio_feats = self.audio_positional_encoding(audio_feats)
         
         # 3. Embed Latents
         h = self.input_proj(x) # (B, d_model, H, W)
@@ -166,3 +167,24 @@ class DiffusionTransformer(nn.Module):
         out = self.output_proj(h) # (B, latent_dim, H, W)
         
         return out
+
+
+class PositionalEncoding(nn.Module):
+    """Sinusoidal positional encoding for sequence ordering."""
+
+    def __init__(self, d_model: int, max_len: int = 512, dropout: float = 0.0):
+        super().__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)  # (1, max_len, d_model)
+        self.register_buffer("pe", pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, D)
+        x = x + self.pe[:, : x.size(1), :]
+        return self.dropout(x)
