@@ -5,6 +5,38 @@ import random
 class AudioGenerator:
     def __init__(self, sample_rate=16000):
         self.sr = sample_rate
+
+    def normalize(self, waveform: torch.Tensor, target_rms: float = 0.16, peak_limit: float = 0.9) -> torch.Tensor:
+        """
+        Normalize waveform to a comfortable loudness.
+
+        - target_rms is in linear scale (0..1), not dBFS. 0.16 is moderate and more audible.
+        - peak_limit prevents accidental clipping.
+        """
+        if waveform.numel() == 0:
+            return waveform
+        x = waveform - waveform.mean()
+        rms = torch.sqrt(torch.mean(x * x) + 1e-8)
+        if rms > 0:
+            x = x * (target_rms / rms)
+        peak = x.abs().max()
+        if peak > peak_limit:
+            x = x * (peak_limit / peak)
+        return torch.clamp(x, -1.0, 1.0)
+
+    def smooth(self, waveform: torch.Tensor, kernel_size: int = 9) -> torch.Tensor:
+        """
+        Simple low-pass smoothing using a moving average FIR.
+        Helps reduce grating high-frequency content in saw/square tones.
+        """
+        k = int(kernel_size)
+        if k <= 1:
+            return waveform
+        x = waveform.view(1, 1, -1)
+        kernel = torch.ones(1, 1, k, dtype=x.dtype, device=x.device) / k
+        x = torch.nn.functional.pad(x, (k // 2, k // 2), mode="reflect")
+        y = torch.nn.functional.conv1d(x, kernel)
+        return y.view(-1)
         
     def get_envelope(self, t, attack=0.05, release=0.1):
         envelope = torch.ones_like(t)
@@ -25,6 +57,10 @@ class AudioGenerator:
             wave = torch.sign(torch.sin(2 * np.pi * freq * t))
         elif wave_type == 'saw':
             wave = 2 * (freq * t - torch.floor(freq * t + 0.5))
+        elif wave_type == 'triangle':
+            # triangle wave from saw
+            saw = 2 * (freq * t - torch.floor(freq * t + 0.5))
+            wave = 2.0 * torch.abs(saw) - 1.0
         else:
             wave = torch.sin(2 * np.pi * freq * t)
             
@@ -58,7 +94,7 @@ class AudioGenerator:
             
             # Add to waveform
             end_sample = min(current_sample + wave.shape[0], total_samples)
-            full_waveform[current_sample:end_sample] += wave[:end_sample-current_sample] * 0.9
+            full_waveform[current_sample:end_sample] += wave[:end_sample-current_sample] * 0.5
             
             # Advance by note duration + pause
             current_sample += int((current_note_dur + current_pause) * self.sr)
@@ -71,7 +107,7 @@ class AudioGenerator:
                 
             note_idx += 1
             
-        return full_waveform.unsqueeze(0)
+        return self.normalize(full_waveform).unsqueeze(0)
 
     def generate_sequence(self, duration=3.0, bpm=120):
         total_samples = int(duration * self.sr)
@@ -91,7 +127,7 @@ class AudioGenerator:
             wave = self.generate_tone(freq, note_dur, wave_type='sine')
             
             end_sample = min(current_sample + wave.shape[0], total_samples)
-            full_waveform[current_sample:end_sample] += wave[:end_sample-current_sample] * 0.6
+            full_waveform[current_sample:end_sample] += wave[:end_sample-current_sample] * 0.35
             current_sample += int(note_dur * self.sr)
 
         # 2. Melody (Faster notes)
@@ -100,15 +136,14 @@ class AudioGenerator:
             note_dur = beat_dur * random.choice([0.5, 0.25, 1.0])
             freq = root_freq * random.choice(scale_ratios) * random.choice([1, 2])
             
-            wave = self.generate_tone(freq, note_dur, wave_type='saw')
+            # Use a softer waveform than raw saw to reduce harshness.
+            wave = self.generate_tone(freq, note_dur, wave_type='triangle')
+            wave = self.smooth(wave, kernel_size=9)
             
             end_sample = min(current_sample + wave.shape[0], total_samples)
             # Add with less volume
-            full_waveform[current_sample:end_sample] += wave[:end_sample-current_sample] * 0.3
+            full_waveform[current_sample:end_sample] += wave[:end_sample-current_sample] * 0.18
             current_sample += int(note_dur * self.sr)
             
-        # Normalize
-        if full_waveform.abs().max() > 0:
-            full_waveform = full_waveform / full_waveform.abs().max()
-            
+        full_waveform = self.normalize(full_waveform)
         return full_waveform.unsqueeze(0) # (1, T)
