@@ -15,6 +15,7 @@ from vae import VAE
 from visualizers import get_random_visualizer
 from tracker import ExperimentTracker
 from utils import load_config, get_device
+from audio_features import compute_audio_timeline
 
 # Simple dataset that just generates frames (ignoring audio)
 class VisualizerFrameDataset(IterableDataset):
@@ -44,7 +45,9 @@ class VisualizerFrameDataset(IterableDataset):
             fps = self.config.get('data', {}).get('fps', 30)
             height = self.config.get('data', {}).get('height', 128)
             width = self.config.get('data', {}).get('width', 128)
-            frames = viz.render(waveform, fps=fps, height=height, width=width, sample_rate=sample_rate) # (T, 3, H, W)
+            num_frames = max(1, int((waveform.shape[1] / sample_rate) * fps))
+            audio_feats = compute_audio_timeline(waveform, sample_rate=sample_rate, fps=fps, num_frames=num_frames)
+            frames = viz.render(waveform, fps=fps, height=height, width=width, sample_rate=sample_rate, audio_feats=audio_feats) # (T, 3, H, W)
             
             # Yield individual frames to train the VAE on images
             # Shuffle frames to break temporal correlation in batch

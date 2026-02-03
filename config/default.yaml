@@ -64,3 +64,13 @@ inference:
   style_mode: "random"
   # Optional integer seed for deterministic style sampling (null = no seeding).
   style_seed: null
+
+# Phase 3 data diversity knobs (optional).
+# These affect which procedural visualizers are sampled for synthetic training data.
+visualizers:
+  # Probability of using an augmented wrapper (smooth postprocess stack).
+  aug_prob: 0.35
+  # Probability of choosing an organic/painterly family vs geometric.
+  organic_prob: 0.5
+  # Probability of composing 2–3 primitives into a single clip.
+  composite_prob: 0.25

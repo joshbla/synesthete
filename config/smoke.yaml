@@ -42,5 +42,14 @@ inference:
   # If you suspect style is masking audio-reactivity, temporarily set:
   #   style_mode: "zero"
   style_mode: "random"
-  style_seed: null
+  # For easier A/B comparisons, you can set a fixed seed here.
+  # Leave null for maximum variety.
+  style_seed: 123
+
+# Phase 3 smoke knobs: keep variety high but not too chaotic.
+# If outputs look "static-y blobs", reduce aug/composite first before changing primitives.
+visualizers:
+  organic_prob: 0.5
+  aug_prob: 0.2
+  composite_prob: 0.2
 

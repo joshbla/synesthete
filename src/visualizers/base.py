@@ -1,10 +1,11 @@
 import torch
 
 class Visualizer:
-    def render(self, waveform, fps=30, height=128, width=128, sample_rate=16000):
+    def render(self, waveform, fps=30, height=128, width=128, sample_rate=16000, audio_feats=None):
         """
         Render audio waveform to video frames.
         waveform: (1, samples) tensor
+        audio_feats: optional (T, F) frame-aligned features for this clip
         Returns: (num_frames, 3, height, width) tensor
         """
         raise NotImplementedError

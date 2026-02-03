@@ -59,11 +59,33 @@ class LatentDiffusionDataset(IterableDataset):
             # To make the model learn "Audio -> Viz", we need the viz to be reactive.
             # Our visualizers ARE reactive to the waveform passed in.
             
-            viz = get_random_visualizer()
             height = self.config.get('data', {}).get('height', 128)
             width = self.config.get('data', {}).get('width', 128)
-            frames = viz.render(waveform, fps=self.fps, height=height, width=width, sample_rate=self.sample_rate)
+            # Compute frame-aligned audio features once, and drive the visualizer from them.
+            # This keeps the renderer's "audio contract" aligned with what the model sees (Phase 3).
+            num_frames = max(1, int((waveform.shape[1] / self.sample_rate) * self.fps))
+            audio_feats = compute_audio_timeline(
+                waveform,
+                sample_rate=self.sample_rate,
+                fps=self.fps,
+                num_frames=num_frames,
+                n_fft=self.audio_feature_n_fft,
+                num_bands=self.audio_feature_num_bands,
+            )  # (T, F)
+
+            viz = get_random_visualizer(config=self.config)
+            frames = viz.render(
+                waveform,
+                fps=self.fps,
+                height=height,
+                width=width,
+                sample_rate=self.sample_rate,
+                audio_feats=audio_feats,
+            )
+            # Ensure audio_feats length matches actual frames
             num_frames = frames.size(0)
+            if audio_feats.size(0) != num_frames:
+                audio_feats = audio_feats[:num_frames]
             # Sample one clip-level style latent and reuse for all frames from this clip
             style_z = torch.randn(self.style_dim)
             
@@ -75,15 +97,7 @@ class LatentDiffusionDataset(IterableDataset):
                 # We use the mean (mu) as the ground truth latent for diffusion
                 # We could sample, but mean is cleaner for training targets
                 latents = mu # (90, 256, 8, 8)
-                # 2b. Compute audio features aligned to frames
-                audio_feats = compute_audio_timeline(
-                    waveform,
-                    sample_rate=self.sample_rate,
-                    fps=self.fps,
-                    num_frames=num_frames,
-                    n_fft=self.audio_feature_n_fft,
-                    num_bands=self.audio_feature_num_bands,
-                )  # (T, F)
+                # audio_feats already computed above
             
             # 3. Yield pairs
             # We yield (Audio_Features_for_Frame_i, Latent_Frame_i).

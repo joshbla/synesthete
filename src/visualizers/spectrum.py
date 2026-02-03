@@ -4,7 +4,7 @@ import math
 from .base import Visualizer
 
 class SpectrumVisualizer(Visualizer):
-    def render(self, waveform, fps=30, height=128, width=128, sample_rate=16000):
+    def render(self, waveform, fps=30, height=128, width=128, sample_rate=16000, audio_feats=None):
         num_frames, samples_per_frame = self.get_frame_audio_chunks(waveform, fps, sample_rate=sample_rate)
         video_frames = torch.zeros(num_frames, 3, height, width)
         
@@ -17,28 +17,36 @@ class SpectrumVisualizer(Visualizer):
         end_color = torch.tensor([random.random(), random.random(), random.random()])
         
         for i in range(num_frames):
-            start = i * samples_per_frame
-            end = min((i + 1) * samples_per_frame, waveform.shape[1])
-            chunk = waveform[0, start:end]
-            
-            if chunk.shape[0] < 10:
-                continue
+            if audio_feats is not None and i < audio_feats.shape[0] and audio_feats.shape[1] >= 6:
+                # Use Phase 1 timeline: band energies live in columns 5:
+                bands = torch.sigmoid(audio_feats[i, 5:]).to(torch.float32)  # (num_bands,)
+                # Interpolate to requested bar count
+                bands = bands.view(1, 1, -1)
+                bars = torch.nn.functional.interpolate(bands, size=num_bars, mode="linear", align_corners=False)
+                bar_vals = bars.view(-1).tolist()
+            else:
+                start = i * samples_per_frame
+                end = min((i + 1) * samples_per_frame, waveform.shape[1])
+                chunk = waveform[0, start:end]
+                
+                if chunk.shape[0] < 10:
+                    continue
 
-            fft = torch.fft.rfft(chunk)
-            fft_mag = fft.abs()
-            fft_mag = torch.log1p(fft_mag)
-            if fft_mag.max() > 0:
-                fft_mag = fft_mag / fft_mag.max()
-            
-            # Binning
-            bin_size = fft_mag.shape[0] // num_bars
-            bar_vals = []
-            for b in range(num_bars):
-                if bin_size > 0:
-                    val = fft_mag[b*bin_size : (b+1)*bin_size].mean().item()
-                else:
-                    val = 0
-                bar_vals.append(val)
+                fft = torch.fft.rfft(chunk)
+                fft_mag = fft.abs()
+                fft_mag = torch.log1p(fft_mag)
+                if fft_mag.max() > 0:
+                    fft_mag = fft_mag / fft_mag.max()
+                
+                # Binning
+                bin_size = fft_mag.shape[0] // num_bars
+                bar_vals = []
+                for b in range(num_bars):
+                    if bin_size > 0:
+                        val = fft_mag[b*bin_size : (b+1)*bin_size].mean().item()
+                    else:
+                        val = 0
+                    bar_vals.append(val)
             
             if mode == 'vertical':
                 bar_width = width // num_bars

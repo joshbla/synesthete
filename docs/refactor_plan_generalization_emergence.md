@@ -220,7 +220,15 @@ This section tracks what has been implemented so far, so the plan stays a “liv
     - `inference.style_mode`, `inference.style_seed`
 
 - **Phase 3 — Compositional visualizer programs**
-  - **Not started**: Visualizer variety is still driven by a small set of monolithic renderers.
+  - **Completed (initial)**: Expanded the primitive visualizer suite and added composition/augmentation for combinatorial diversity.
+  - **What changed**:
+    - Added multiple new primitives (e.g. tiles, particles, contours, trails, kaleidoscope).
+    - Added an augmentation wrapper with smooth postprocesses (warp/blur/bloom/vignette/color grade), tuned to avoid “glitch-as-noise.”
+    - Added a multi-primitive compositor (blend multiple primitives in a single clip).
+    - Visualizers can be driven by the same frame-aligned audio feature timeline the model conditions on (Phase 1), reducing “feature contract” mismatch.
+    - Added deterministic sampling hooks (seeded program specs) for debug reproducibility.
+  - **Config added**:
+    - `visualizers.aug_prob`, `visualizers.organic_prob`, `visualizers.composite_prob`
 
 - **Phase 4 — Temporal coherence**
   - **Not started**: Frames are still sampled i.i.d. (even though conditioning is now time-aligned per frame).

@@ -3,6 +3,7 @@ import random
 from torch.utils.data import IterableDataset
 from .audio_gen import AudioGenerator
 from .visualizers import get_random_visualizer
+from .audio_features import compute_audio_timeline
 
 # Keep the old function for creating validation sets or debug samples
 def create_synthetic_dataset(output_dir, num_samples=100, duration=3.0, fps=30, height=128, width=128):
@@ -20,7 +21,9 @@ def create_synthetic_dataset(output_dir, num_samples=100, duration=3.0, fps=30, 
     for i in range(num_samples):
         waveform = audio_gen.generate_sequence(duration=duration, bpm=random.randint(80, 140))
         viz = get_random_visualizer()
-        video = viz.render(waveform, fps=fps, height=height, width=width, sample_rate=audio_gen.sr)
+        num_frames = max(1, int((waveform.shape[1] / audio_gen.sr) * fps))
+        audio_feats = compute_audio_timeline(waveform, sample_rate=audio_gen.sr, fps=fps, num_frames=num_frames)
+        video = viz.render(waveform, fps=fps, height=height, width=width, sample_rate=audio_gen.sr, audio_feats=audio_feats)
         
         audio_path = output_dir / f"sample_{i}.wav"
         video_path = output_dir / f"sample_{i}.mp4"
@@ -77,12 +80,20 @@ class InfiniteAVDataset(IterableDataset):
             
             # 2. Generate Video
             viz = get_random_visualizer()
+            num_frames = max(1, int((waveform.shape[1] / self.sample_rate) * self.fps))
+            audio_feats = compute_audio_timeline(
+                waveform,
+                sample_rate=self.sample_rate,
+                fps=self.fps,
+                num_frames=num_frames,
+            )
             video = viz.render(
                 waveform, 
                 fps=self.fps, 
                 height=self.height, 
                 width=self.width,
-                sample_rate=self.sample_rate
+                sample_rate=self.sample_rate,
+                audio_feats=audio_feats,
             )
             
             gen_time = time.time() - start_time

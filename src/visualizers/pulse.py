@@ -3,7 +3,7 @@ import random
 from .base import Visualizer
 
 class PulseVisualizer(Visualizer):
-    def render(self, waveform, fps=30, height=128, width=128, sample_rate=16000):
+    def render(self, waveform, fps=30, height=128, width=128, sample_rate=16000, audio_feats=None):
         num_frames, samples_per_frame = self.get_frame_audio_chunks(waveform, fps, sample_rate=sample_rate)
         video_frames = torch.zeros(num_frames, 3, height, width)
         
@@ -33,7 +33,11 @@ class PulseVisualizer(Visualizer):
             start = i * samples_per_frame
             end = min((i + 1) * samples_per_frame, waveform.shape[1])
             chunk = waveform[0, start:end]
-            amp = chunk.abs().mean().item()
+            if audio_feats is not None and i < audio_feats.shape[0]:
+                # audio_feats are normalized; sigmoid maps "low/high energy" -> 0..1
+                amp = float(torch.sigmoid(audio_feats[i, 0]).item())
+            else:
+                amp = chunk.abs().mean().item()
             
             for shape in shapes:
                 # Calculate size based on amp

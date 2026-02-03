@@ -4,7 +4,7 @@ import math
 from .base import Visualizer
 
 class WaveformVisualizer(Visualizer):
-    def render(self, waveform, fps=30, height=128, width=128, sample_rate=16000):
+    def render(self, waveform, fps=30, height=128, width=128, sample_rate=16000, audio_feats=None):
         num_frames, samples_per_frame = self.get_frame_audio_chunks(waveform, fps, sample_rate=sample_rate)
         video_frames = torch.zeros(num_frames, 3, height, width)
         
@@ -25,6 +25,10 @@ class WaveformVisualizer(Visualizer):
             start = i * samples_per_frame
             end = min((i + 1) * samples_per_frame, waveform.shape[1])
             chunk = waveform[0, start:end]
+            # Optional amplitude scaling from aligned features
+            amp_scale = 1.0
+            if audio_feats is not None and i < audio_feats.shape[0]:
+                amp_scale = 0.4 + 1.2 * float(torch.sigmoid(audio_feats[i, 0]).item())
             
             # Downsample chunk to width
             if chunk.shape[0] > width:
@@ -34,7 +38,7 @@ class WaveformVisualizer(Visualizer):
                 chunk_ds = torch.nn.functional.pad(chunk, (0, width - chunk.shape[0]))
                 
             # Normalize to -1..1 then scale to height
-            chunk_ds = chunk_ds / (chunk_ds.abs().max() + 1e-6)
+            chunk_ds = (chunk_ds / (chunk_ds.abs().max() + 1e-6)) * amp_scale
             
             if mode == 'line':
                 # Draw line across middle
