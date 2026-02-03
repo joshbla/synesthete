@@ -20,7 +20,7 @@ def create_synthetic_dataset(output_dir, num_samples=100, duration=3.0, fps=30, 
     for i in range(num_samples):
         waveform = audio_gen.generate_sequence(duration=duration, bpm=random.randint(80, 140))
         viz = get_random_visualizer()
-        video = viz.render(waveform, fps=fps, height=height, width=width)
+        video = viz.render(waveform, fps=fps, height=height, width=width, sample_rate=audio_gen.sr)
         
         audio_path = output_dir / f"sample_{i}.wav"
         video_path = output_dir / f"sample_{i}.mp4"
@@ -47,6 +47,7 @@ class InfiniteAVDataset(IterableDataset):
         self.height = height
         self.width = width
         self.audio_gen = AudioGenerator()
+        self.sample_rate = self.audio_gen.sr
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -80,7 +81,8 @@ class InfiniteAVDataset(IterableDataset):
                 waveform, 
                 fps=self.fps, 
                 height=self.height, 
-                width=self.width
+                width=self.width,
+                sample_rate=self.sample_rate
             )
             
             gen_time = time.time() - start_time

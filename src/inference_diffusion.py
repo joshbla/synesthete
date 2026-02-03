@@ -79,10 +79,32 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
     print("Sampling...")
     timesteps = config.get('diffusion', {}).get('timesteps', 50)
     scheduler = NoiseScheduler(num_timesteps=timesteps, device=device)
-    
-    # Batch generation for speed
-    batch_size = num_frames
-    audio_batch = waveform.repeat(batch_size, 1, 1) # (90, 1, 48000)
+
+    # Build per-frame aligned audio windows, then sample a batch of frames.
+    # This matches training: each target frame is conditioned on its audio slice.
+    fps = config.get('data', {}).get('fps', 30)
+    audio_window_seconds = config.get('diffusion', {}).get('audio_window_seconds', 0.25)
+    audio_window_samples = max(16, int(audio_window_seconds * sample_rate))
+
+    audio_windows = []
+    half = audio_window_samples // 2
+    for i in range(num_frames):
+        center_sample = int((i + 0.5) * sample_rate / fps)
+        start = center_sample - half
+        end = start + audio_window_samples
+
+        left_pad = max(0, -start)
+        right_pad = max(0, end - waveform.shape[-1])
+        start = max(0, start)
+        end = min(waveform.shape[-1], end)
+
+        chunk = waveform[:, :, start:end]  # (1, 1, S)
+        if left_pad > 0 or right_pad > 0:
+            chunk = nn.functional.pad(chunk, (left_pad, right_pad))
+        audio_windows.append(chunk)
+
+    audio_batch = torch.cat(audio_windows, dim=0)  # (T, 1, T_audio_window)
+    batch_size = audio_batch.shape[0]
     
     # Start with pure noise
     shape = (batch_size, latent_dim, latent_spatial_size, latent_spatial_size)

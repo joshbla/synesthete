@@ -36,7 +36,7 @@ class NoiseScheduler:
     def sample(self, model, audio, shape):
         """
         Sample from the model.
-        audio: (B, 1, 48000)
+        audio: (B, 1, T_audio_window)
         shape: (B, C, H, W) -> (B, 256, 8, 8)
         """
         model.eval()
@@ -77,7 +77,7 @@ class DiffusionTransformer(nn.Module):
     Inputs:
     - x: Noisy Latents (B, 256, 8, 8)
     - t: Timesteps (B,)
-    - audio: Raw Audio (B, 1, 48000)
+    - audio: Raw Audio window (B, 1, T_audio_window)
     
     Output:
     - noise_pred: Predicted Noise (B, 256, 8, 8)
@@ -135,7 +135,7 @@ class DiffusionTransformer(nn.Module):
         """
         x: (B, latent_dim, H, W)
         t: (B,)
-        audio: (B, 1, 48000)
+        audio: (B, 1, T_audio_window)
         """
         B = x.shape[0]
         

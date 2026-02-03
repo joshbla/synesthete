@@ -4,8 +4,8 @@ import math
 from .base import Visualizer
 
 class SpectrumVisualizer(Visualizer):
-    def render(self, waveform, fps=30, height=128, width=128):
-        num_frames, samples_per_frame = self.get_frame_audio_chunks(waveform, fps)
+    def render(self, waveform, fps=30, height=128, width=128, sample_rate=16000):
+        num_frames, samples_per_frame = self.get_frame_audio_chunks(waveform, fps, sample_rate=sample_rate)
         video_frames = torch.zeros(num_frames, 3, height, width)
         
         # Randomize mode

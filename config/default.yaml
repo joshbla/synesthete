@@ -39,6 +39,9 @@ diffusion:
   learning_rate: 0.0001
   batch_size: 32
   timesteps: 50
+  # Per-frame audio conditioning window length (seconds).
+  # Each video frame is conditioned on an audio slice centered at that frame's timestamp.
+  audio_window_seconds: 0.25
   frames_per_clip: 10
 
 tracker:

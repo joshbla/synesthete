@@ -44,7 +44,7 @@ class VisualizerFrameDataset(IterableDataset):
             fps = self.config.get('data', {}).get('fps', 30)
             height = self.config.get('data', {}).get('height', 128)
             width = self.config.get('data', {}).get('width', 128)
-            frames = viz.render(waveform, fps=fps, height=height, width=width) # (T, 3, H, W)
+            frames = viz.render(waveform, fps=fps, height=height, width=width, sample_rate=sample_rate) # (T, 3, H, W)
             
             # Yield individual frames to train the VAE on images
             # Shuffle frames to break temporal correlation in batch

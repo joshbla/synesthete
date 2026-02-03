@@ -26,7 +26,11 @@ class LatentDiffusionDataset(IterableDataset):
         self.samples_per_epoch = config.get('diffusion', {}).get('samples_per_epoch', 2000)
         self.vae = vae
         self.device = device
-        self.audio_gen = AudioGenerator(sample_rate=config.get('data', {}).get('sample_rate', 16000))
+        self.sample_rate = config.get('data', {}).get('sample_rate', 16000)
+        self.audio_gen = AudioGenerator(sample_rate=self.sample_rate)
+        self.fps = self.config.get('data', {}).get('fps', 30)
+        self.audio_window_seconds = self.config.get('diffusion', {}).get('audio_window_seconds', 0.25)
+        self.audio_window_samples = max(16, int(self.audio_window_seconds * self.sample_rate))
         
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -49,10 +53,9 @@ class LatentDiffusionDataset(IterableDataset):
             # Our visualizers ARE reactive to the waveform passed in.
             
             viz = get_random_visualizer()
-            fps = self.config.get('data', {}).get('fps', 30)
             height = self.config.get('data', {}).get('height', 128)
             width = self.config.get('data', {}).get('width', 128)
-            frames = viz.render(waveform, fps=fps, height=height, width=width)
+            frames = viz.render(waveform, fps=self.fps, height=height, width=width, sample_rate=self.sample_rate)
             
             # 2. Encode to Latents
             # We process in batches to save memory if needed, but 90 frames is small
@@ -64,17 +67,27 @@ class LatentDiffusionDataset(IterableDataset):
                 latents = mu # (90, 256, 8, 8)
             
             # 3. Yield pairs
-            # We yield (Audio, Latent_Frame)
-            # We repeat audio for each frame? Or train on sequence?
-            # For simplicity, let's train Frame-by-Frame conditioned on the WHOLE audio clip.
-            # This allows the model to look at past/future audio context.
-            
-            # Yield: (Audio_Clip, Latent_Frame_t, t_index)
-            # Actually, let's just pick random frames from the clip to avoid correlation
+            # We yield (Audio_Window_for_Frame_i, Latent_Frame_i).
+            # This makes the conditioning identifiable: frame i is paired with its aligned audio slice.
             indices = torch.randperm(frames.size(0))
             frames_per_clip = self.config.get('diffusion', {}).get('frames_per_clip', 10)
-            for i in indices[:frames_per_clip]: 
-                yield waveform, latents[i]
+            for i in indices[:frames_per_clip]:
+                # Center an audio window on this frame's time index.
+                # Map frame i -> sample index via fps.
+                center_sample = int((i + 0.5) * self.sample_rate / self.fps)
+                half = self.audio_window_samples // 2
+                start = center_sample - half
+                end = start + self.audio_window_samples
+
+                # Slice with padding
+                left_pad = max(0, -start)
+                right_pad = max(0, end - waveform.shape[1])
+                start = max(0, start)
+                end = min(waveform.shape[1], end)
+                chunk = waveform[:, start:end]
+                if left_pad > 0 or right_pad > 0:
+                    chunk = nn.functional.pad(chunk, (left_pad, right_pad))
+                yield chunk, latents[i]
 
 class DiffusionTrainer:
     def __init__(self):
