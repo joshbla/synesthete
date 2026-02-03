@@ -113,6 +113,15 @@ Your refactor should make these shortcuts *expensive* and make real audio-condit
   - programs are built from **primitives** (bars, rings, particle fields, contours, trails, grids, distortions, palettes, blending ops, etc.)
   - each program has continuous parameters and composition structure
 - Keep named “classic visualizers” as presets for debugging, but train primarily on random programs.
+- Define a **stable program schema** (even if it’s just a Python dict/dataclass at first):
+  - enables deterministic re-renders of the “same” sample (debuggability)
+  - makes it easy to add/retire primitives without breaking the whole data engine
+- Standardize the **audio-conditioning contract** for all primitives/programs:
+  - all programs should use the same frame-aligned audio feature timeline (Phase 1), not ad-hoc per-visualizer feature extraction
+  - this is what makes “general audio→visual rules” learnable across many styles
+- Composition operators should be first-class:
+  - layering order, masks, blend modes (add/max/multiply/alpha), and multi-primitive scenes (1–4 primitives per clip)
+  - this is where much of the combinatorial “emergence capacity” comes from
 
 **Result**: “new visualizations” becomes “new programs / new parameter regions,” which are still in-distribution and therefore stable.
 
@@ -208,6 +217,7 @@ This section tracks what has been implemented so far, so the plan stays a “liv
     - Inference supports `style_mode` (`random` vs `zero`) and `style_seed` to make audio-reactivity checks easier and repeatable.
   - **Config added**:
     - `diffusion.style_dim`, `diffusion.p_style_drop`
+    - `inference.style_mode`, `inference.style_seed`
 
 - **Phase 3 — Compositional visualizer programs**
   - **Not started**: Visualizer variety is still driven by a small set of monolithic renderers.
