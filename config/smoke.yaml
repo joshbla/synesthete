@@ -1,0 +1,46 @@
+##
+# Smoke-test override config
+#
+# Use with:
+#   uv run python run_pipeline.py --smoke --force-all
+#
+# This file intentionally contains ONLY overrides vs config/default.yaml.
+# That keeps it from drifting when you add/remove fields elsewhere.
+##
+
+data:
+  duration: 2.0
+  height: 128
+  width: 128
+  fps: 20
+  num_samples: 60
+
+model:
+  frame_size: [128, 128]
+  # duration * fps = 40 frames
+  num_frames: 40
+  d_model: 256
+
+vae:
+  epochs: 1
+  samples_per_epoch: 300
+  batch_size: 32
+
+diffusion:
+  epochs: 2
+  samples_per_epoch: 600
+  batch_size: 16
+  timesteps: 25
+  frames_per_clip: 10
+
+tracker:
+  enabled: false
+
+inference:
+  output_video: "output_smoke.mp4"
+  # Default smoke behavior: sample a random style (matches "real" generation).
+  # If you suspect style is masking audio-reactivity, temporarily set:
+  #   style_mode: "zero"
+  style_mode: "random"
+  style_seed: null
+

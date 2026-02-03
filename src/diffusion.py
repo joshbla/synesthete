@@ -33,10 +33,11 @@ class NoiseScheduler:
         x_t = sqrt_alphas_cumprod * x_0 + sqrt_one_minus_alphas_cumprod * noise
         return x_t, noise
         
-    def sample(self, model, audio, shape):
+    def sample(self, model, audio, shape, style=None):
         """
         Sample from the model.
         audio: (B, T_audio, F) frame-aligned audio features
+        style: (B, style_dim) optional clip-level style latent
         shape: (B, C, H, W) -> (B, 256, 8, 8)
         """
         model.eval()
@@ -51,7 +52,7 @@ class NoiseScheduler:
             t = torch.full((B,), i, device=self.device, dtype=torch.long)
             
             with torch.no_grad():
-                predicted_noise = model(x, t, audio)
+                predicted_noise = model(x, t, audio, style=style)
                 
             alpha = self.alphas[i]
             alpha_cumprod = self.alphas_cumprod[i]
@@ -82,13 +83,23 @@ class DiffusionTransformer(nn.Module):
     Output:
     - noise_pred: Predicted Noise (B, 256, 8, 8)
     """
-    def __init__(self, latent_dim=256, d_model=512, nhead=8, num_layers=6, latent_spatial_size=8, audio_feature_dim=13):
+    def __init__(
+        self,
+        latent_dim=256,
+        d_model=512,
+        nhead=8,
+        num_layers=6,
+        latent_spatial_size=8,
+        audio_feature_dim=13,
+        style_dim=64,
+    ):
         super().__init__()
         
         self.latent_dim = latent_dim
         self.d_model = d_model
         self.latent_spatial_size = latent_spatial_size
         self.audio_feature_dim = audio_feature_dim
+        self.style_dim = style_dim
         num_tokens = latent_spatial_size * latent_spatial_size
         
         # 1. Time Embedding
@@ -111,6 +122,15 @@ class DiffusionTransformer(nn.Module):
 
         # Positional encoding so the model can use ordering in T_audio
         self.audio_positional_encoding = PositionalEncoding(d_model=d_model, max_len=512, dropout=0.0)
+
+        # Style token: a single clip-level latent that provides a place to put
+        # aesthetic randomness (Phase 2 factorization).
+        self.style_mlp = nn.Sequential(
+            nn.LayerNorm(style_dim),
+            nn.Linear(style_dim, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model),
+        )
         
         # 3. Latent Input Projection
         # Flatten spatial grid to tokens
@@ -125,11 +145,12 @@ class DiffusionTransformer(nn.Module):
         # 5. Output Projection
         self.output_proj = nn.Conv2d(d_model, latent_dim, kernel_size=1)
         
-    def forward(self, x, t, audio):
+    def forward(self, x, t, audio, style=None):
         """
         x: (B, latent_dim, H, W)
         t: (B,)
         audio: (B, T_audio, F)
+        style: (B, style_dim) or None
         """
         B = x.shape[0]
         
@@ -147,6 +168,18 @@ class DiffusionTransformer(nn.Module):
             )
         audio_feats = self.audio_proj(audio)  # (B, T_audio, d_model)
         audio_feats = self.audio_positional_encoding(audio_feats)
+
+        # 2b. Style token
+        if style is None:
+            style = torch.zeros((B, self.style_dim), device=audio.device, dtype=audio.dtype)
+        if style.ndim != 2 or style.shape[0] != B or style.shape[1] != self.style_dim:
+            raise ValueError(
+                f"Expected style shape (B, {self.style_dim}) where B={B}, got {tuple(style.shape)}"
+            )
+        style_tok = self.style_mlp(style).unsqueeze(1)  # (B, 1, d_model)
+
+        # Cross-attend to [style_tok, audio_feats]
+        memory = torch.cat([style_tok, audio_feats], dim=1)  # (B, 1+T_audio, d_model)
         
         # 3. Embed Latents
         h = self.input_proj(x) # (B, d_model, H, W)
@@ -159,8 +192,8 @@ class DiffusionTransformer(nn.Module):
         h = h + t_emb
         
         # 4. Transformer
-        # tgt = latents, memory = audio
-        h = self.transformer(tgt=h, memory=audio_feats) # (B, num_tokens, d_model)
+        # tgt = latents, memory = (style + audio)
+        h = self.transformer(tgt=h, memory=memory) # (B, num_tokens, d_model)
         
         # 5. Output
         h = h.permute(0, 2, 1).view(B, self.d_model, self.latent_spatial_size, self.latent_spatial_size)

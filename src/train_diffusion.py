@@ -37,6 +37,7 @@ class LatentDiffusionDataset(IterableDataset):
         # 0 means only the current frame's feature vector is used.
         self.audio_feature_context = int(self.config.get('diffusion', {}).get('audio_feature_context', 0))
         self.audio_feature_T = 2 * self.audio_feature_context + 1
+        self.style_dim = int(self.config.get('diffusion', {}).get('style_dim', 64))
         
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -63,6 +64,8 @@ class LatentDiffusionDataset(IterableDataset):
             width = self.config.get('data', {}).get('width', 128)
             frames = viz.render(waveform, fps=self.fps, height=height, width=width, sample_rate=self.sample_rate)
             num_frames = frames.size(0)
+            # Sample one clip-level style latent and reuse for all frames from this clip
+            style_z = torch.randn(self.style_dim)
             
             # 2. Encode to Latents
             # We process in batches to save memory if needed, but 90 frames is small
@@ -95,7 +98,7 @@ class LatentDiffusionDataset(IterableDataset):
                     jj = min(max(j, 0), num_frames - 1)
                     ctx.append(audio_feats[jj])
                 feat_ctx = torch.stack(ctx, dim=0)  # (T_ctx, F)
-                yield feat_ctx, latents[i]
+                yield feat_ctx, latents[i], style_z
 
 class DiffusionTrainer:
     def __init__(self):
@@ -127,11 +130,13 @@ class DiffusionTrainer:
         # VAE downsamples by 16 (4 layers of stride 2)
         latent_spatial_size = height // 16 
         num_bands = int(self.config.get('diffusion', {}).get('audio_feature_num_bands', 8))
+        style_dim = int(self.config.get('diffusion', {}).get('style_dim', 64))
         self.model = DiffusionTransformer(
             latent_dim=latent_dim,
             d_model=d_model,
             latent_spatial_size=latent_spatial_size,
             audio_feature_dim=audio_feature_dim(num_bands),
+            style_dim=style_dim,
         ).to(self.device)
         lr = self.config.get('diffusion', {}).get('learning_rate', 1e-4)
         self.optimizer = optim.AdamW(self.model.parameters(), lr=lr)
@@ -152,6 +157,7 @@ class DiffusionTrainer:
         
         dataset = LatentDiffusionDataset(self.vae, config=self.config, device=self.device)
         dataloader = DataLoader(dataset, batch_size=batch_size)
+        p_style_drop = float(self.config.get('diffusion', {}).get('p_style_drop', 0.2))
         
         self.model.train()
         
@@ -160,10 +166,17 @@ class DiffusionTrainer:
             start_time = time.time()
             batch_count = 0
             
-            for batch_idx, (audio, latents) in enumerate(dataloader):
+            for batch_idx, (audio, latents, style) in enumerate(dataloader):
                 audio = audio.to(self.device)
                 latents = latents.to(self.device) # (B, 256, 8, 8)
+                style = style.to(self.device)     # (B, style_dim)
                 B = latents.shape[0]
+
+                # Style dropout: sometimes remove style conditioning so the model
+                # can still operate when style is unspecified at inference.
+                if p_style_drop > 0:
+                    drop_mask = (torch.rand((B,), device=self.device) < p_style_drop).to(style.dtype)[:, None]
+                    style = style * (1.0 - drop_mask)
                 
                 # Sample random timesteps
                 t = torch.randint(0, self.scheduler.num_timesteps, (B,), device=self.device).long()
@@ -173,7 +186,7 @@ class DiffusionTrainer:
                 
                 # Predict noise
                 self.optimizer.zero_grad()
-                noise_pred = self.model(noisy_latents, t, audio)
+                noise_pred = self.model(noisy_latents, t, audio, style=style)
                 
                 # Loss
                 loss = nn.functional.mse_loss(noise_pred, noise)

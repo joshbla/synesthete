@@ -39,6 +39,9 @@ diffusion:
   learning_rate: 0.0001
   batch_size: 32
   timesteps: 50
+  # Phase 2 factorization (continuous style latent)
+  style_dim: 64
+  p_style_drop: 0.2
   # Phase 1 conditioning (frame-aligned audio feature timeline)
   # Each target frame is conditioned on its aligned audio feature vector, optionally
   # with a small neighbor context window (audio_feature_context).
@@ -55,3 +58,9 @@ tracker:
 
 inference:
   output_video: "output_test.mp4"
+  # Phase 2: style control at inference time.
+  # - "random": sample a new style latent per run (default)
+  # - "zero": disable style randomness (useful for smoke tests / audio-reactivity checks)
+  style_mode: "random"
+  # Optional integer seed for deterministic style sampling (null = no seeding).
+  style_seed: null

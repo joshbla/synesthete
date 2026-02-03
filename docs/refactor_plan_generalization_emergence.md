@@ -199,7 +199,15 @@ This section tracks what has been implemented so far, so the plan stays a “liv
     - `diffusion.audio_feature_n_fft`, `diffusion.audio_feature_num_bands`, `diffusion.audio_feature_context`
 
 - **Phase 2 — Factorize variation (style)**
-  - **Not started**: No clip-level continuous style latent or style/audio dropout yet.
+  - **Completed (minimal)**: Added a clip-level continuous style latent `style_z` and training-time style dropout.
+  - **What changed**:
+    - A single `style_z` is sampled per clip and reused across that clip’s frames.
+    - Diffusion cross-attends to an explicit **style token** alongside audio features (so “style” has a dedicated channel).
+    - Training uses **style dropout** (`p_style_drop`) to prevent over-reliance on style and enable “unspecified style” behavior.
+    - Inference samples a `style_z` so the same audio can yield multiple aesthetics by resampling style.
+    - Inference supports `style_mode` (`random` vs `zero`) and `style_seed` to make audio-reactivity checks easier and repeatable.
+  - **Config added**:
+    - `diffusion.style_dim`, `diffusion.p_style_drop`
 
 - **Phase 3 — Compositional visualizer programs**
   - **Not started**: Visualizer variety is still driven by a small set of monolithic renderers.

@@ -37,11 +37,13 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
     height = config.get('data', {}).get('height', 128)
     latent_spatial_size = height // 16
     num_bands = int(config.get('diffusion', {}).get('audio_feature_num_bands', 8))
+    style_dim = int(config.get('diffusion', {}).get('style_dim', 64))
     model = DiffusionTransformer(
         latent_dim=latent_dim,
         d_model=d_model,
         latent_spatial_size=latent_spatial_size,
         audio_feature_dim=audio_feature_dim(num_bands),
+        style_dim=style_dim,
     ).to(device)
     try:
         model.load_state_dict(torch.load(model_path, map_location=device))
@@ -111,12 +113,28 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
         ctx_feats.append(torch.stack(ctx, dim=0))
     audio_batch = torch.stack(ctx_feats, dim=0).to(device)  # (T, T_ctx, F)
     batch_size = audio_batch.shape[0]
+
+    # Sample (or override) a single style latent for the whole clip and repeat for all frames.
+    # This lets smoke tests isolate audio-reactivity by setting style_mode=zero.
+    style_mode = (config.get("inference", {}) or {}).get("style_mode", "random")
+    style_seed = (config.get("inference", {}) or {}).get("style_seed", None)
+    if style_seed is not None:
+        torch.manual_seed(int(style_seed))
+
+    if style_mode == "zero":
+        style = torch.zeros((1, style_dim), device=device)
+    elif style_mode == "random":
+        style = torch.randn((1, style_dim), device=device)
+    else:
+        raise ValueError(f"Unknown inference.style_mode={style_mode!r}; expected 'random' or 'zero'")
+
+    style = style.repeat(batch_size, 1)
     
     # Start with pure noise
     shape = (batch_size, latent_dim, latent_spatial_size, latent_spatial_size)
     
     # Sample
-    latents = scheduler.sample(model, audio_batch, shape) # (90, 256, 8, 8)
+    latents = scheduler.sample(model, audio_batch, shape, style=style) # (90, 256, 8, 8)
     
     # 5. Decode Latents
     print("Decoding latents...")
