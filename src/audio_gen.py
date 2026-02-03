@@ -30,6 +30,49 @@ class AudioGenerator:
             
         return wave * self.get_envelope(t)
 
+    def generate_jaws_theme(self, duration=3.0):
+        total_samples = int(duration * self.sr)
+        full_waveform = torch.zeros(total_samples)
+        
+        # Jaws is E and F alternating (semitone)
+        # E2 = 82.41 Hz, F2 = 87.31 Hz
+        note1 = 82.41
+        note2 = 87.31
+        
+        current_sample = 0
+        note_idx = 0
+        
+        # Start slow with pauses, get faster and remove pauses
+        # Initial duration in seconds
+        current_note_dur = 0.5
+        current_pause = 0.4
+        min_note_dur = 0.1
+        decay = 0.8 # Speed up factor
+        
+        while current_sample < total_samples:
+            freq = note1 if note_idx % 2 == 0 else note2
+            
+            # Generate tone
+            # Use sine for a cleaner, deeper sound (like a cello/bass)
+            wave = self.generate_tone(freq, current_note_dur, wave_type='sine')
+            
+            # Add to waveform
+            end_sample = min(current_sample + wave.shape[0], total_samples)
+            full_waveform[current_sample:end_sample] += wave[:end_sample-current_sample] * 0.9
+            
+            # Advance by note duration + pause
+            current_sample += int((current_note_dur + current_pause) * self.sr)
+            
+            # Speed up logic
+            # Every pair of notes (E-F), reduce duration and pause
+            if note_idx % 2 == 1:
+                current_note_dur = max(min_note_dur, current_note_dur * decay)
+                current_pause = max(0, current_pause * decay - 0.05) # Pause shrinks faster
+                
+            note_idx += 1
+            
+        return full_waveform.unsqueeze(0)
+
     def generate_sequence(self, duration=3.0, bpm=120):
         total_samples = int(duration * self.sr)
         full_waveform = torch.zeros(total_samples)
