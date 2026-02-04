@@ -4,9 +4,9 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-def save_favorite(description):
-    # Source file is always the latest output_test.mp4
-    source = Path("output_test.mp4")
+def save_favorite(description, source_path: str = "output_test.mp4"):
+    # Default source is the latest output video, but allow overriding.
+    source = Path(source_path)
     
     if not source.exists():
         print(f"Error: {source} not found. Run the pipeline first.")
@@ -33,8 +33,9 @@ def save_favorite(description):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python scripts/save_favorite.py \"description of run\"")
+        print("Usage: python scripts/save_favorite.py \"description of run\" [path/to/video.mp4]")
         sys.exit(1)
         
     description = sys.argv[1]
-    save_favorite(description)
+    source_path = sys.argv[2] if len(sys.argv) >= 3 else "output_test.mp4"
+    save_favorite(description, source_path=source_path)
