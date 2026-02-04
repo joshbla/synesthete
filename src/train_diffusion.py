@@ -13,6 +13,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from vae import VAE
 from diffusion import DiffusionTransformer, NoiseScheduler
+from matcher import AudioLatentMatcher
 from audio_gen import AudioGenerator
 from audio_features import compute_audio_timeline
 from audio_features import audio_feature_dim
@@ -31,8 +32,13 @@ class LatentDiffusionDataset(IterableDataset):
         self.sample_rate = config.get('data', {}).get('sample_rate', 16000)
         self.audio_gen = AudioGenerator(sample_rate=self.sample_rate)
         self.fps = self.config.get('data', {}).get('fps', 30)
+        self.audio_silence_mix_prob = float(self.config.get("data", {}).get("audio_silence_mix_prob", 0.0))
         self.audio_feature_n_fft = int(self.config.get('diffusion', {}).get('audio_feature_n_fft', 512))
         self.audio_feature_num_bands = int(self.config.get('diffusion', {}).get('audio_feature_num_bands', 8))
+        self.audio_feature_normalize_per_clip = bool(self.config.get('diffusion', {}).get('audio_feature_normalize_per_clip', True))
+        self.audio_feature_include_abs_rms = bool(self.config.get('diffusion', {}).get('audio_feature_include_abs_rms', False))
+        self.audio_feature_include_onset = bool(self.config.get('diffusion', {}).get('audio_feature_include_onset', False))
+        self.audio_feature_include_flux_bands = bool(self.config.get('diffusion', {}).get('audio_feature_include_flux_bands', False))
         # Use local temporal context in feature space (neighboring frames).
         # 0 means only the current frame's feature vector is used.
         self.audio_feature_context = int(self.config.get('diffusion', {}).get('audio_feature_context', 0))
@@ -54,7 +60,10 @@ class LatentDiffusionDataset(IterableDataset):
             # 1. Generate Data
             # Use procedural audio instead of random noise
             duration = self.config.get('data', {}).get('duration', 3.0)
-            waveform = self.audio_gen.generate_sequence(duration=duration) # (1, 48000)
+            if self.audio_silence_mix_prob > 0 and random.random() < self.audio_silence_mix_prob:
+                waveform = self.audio_gen.generate_sequence_dropouts(duration=duration)  # (1, N)
+            else:
+                waveform = self.audio_gen.generate_sequence(duration=duration) # (1, N)
             
             # Ideally we want real audio-viz pairs, but our current viz is random.
             # To make the model learn "Audio -> Viz", we need the viz to be reactive.
@@ -72,6 +81,10 @@ class LatentDiffusionDataset(IterableDataset):
                 num_frames=num_frames,
                 n_fft=self.audio_feature_n_fft,
                 num_bands=self.audio_feature_num_bands,
+                normalize_per_clip=self.audio_feature_normalize_per_clip,
+                include_abs_rms=self.audio_feature_include_abs_rms,
+                include_onset=self.audio_feature_include_onset,
+                include_flux_bands=self.audio_feature_include_flux_bands,
             )  # (T, F)
 
             viz = get_random_visualizer(config=self.config)
@@ -151,13 +164,21 @@ class DiffusionTrainer:
         # VAE downsamples by 16 (4 layers of stride 2)
         latent_spatial_size = height // 16 
         num_bands = int(self.config.get('diffusion', {}).get('audio_feature_num_bands', 8))
+        include_abs_rms = bool(self.config.get('diffusion', {}).get('audio_feature_include_abs_rms', False))
+        include_onset = bool(self.config.get('diffusion', {}).get('audio_feature_include_onset', False))
+        include_flux_bands = bool(self.config.get('diffusion', {}).get('audio_feature_include_flux_bands', False))
         style_dim = int(self.config.get('diffusion', {}).get('style_dim', 64))
         prev_latent_weight = float(self.config.get('diffusion', {}).get('prev_latent_weight', 1.0))
         self.model = DiffusionTransformer(
             latent_dim=latent_dim,
             d_model=d_model,
             latent_spatial_size=latent_spatial_size,
-            audio_feature_dim=audio_feature_dim(num_bands),
+            audio_feature_dim=audio_feature_dim(
+                num_bands,
+                include_abs_rms=include_abs_rms,
+                include_onset=include_onset,
+                include_flux_bands=include_flux_bands,
+            ),
             style_dim=style_dim,
             prev_latent_weight=prev_latent_weight,
         ).to(self.device)
@@ -171,6 +192,28 @@ class DiffusionTrainer:
         timesteps = self.config.get('diffusion', {}).get('timesteps', 50)
         self.scheduler = NoiseScheduler(num_timesteps=timesteps, device=self.device)
 
+        # Phase 5 (optional): audio/latent matcher for mismatch detection pressure
+        self.match_enabled = bool(self.config.get("diffusion", {}).get("match_enabled", False))
+        self.match_weight = float(self.config.get("diffusion", {}).get("match_weight", 0.1))
+        self.match_optimizer = None
+        self.matcher = None
+        if self.match_enabled:
+            match_d_model = int(self.config.get("diffusion", {}).get("match_d_model", 256))
+            match_dropout = float(self.config.get("diffusion", {}).get("match_dropout", 0.0))
+            match_lr = float(self.config.get("diffusion", {}).get("match_lr", 1e-4))
+            self.matcher = AudioLatentMatcher(
+                audio_feature_dim=audio_feature_dim(
+                    num_bands,
+                    include_abs_rms=include_abs_rms,
+                    include_onset=include_onset,
+                    include_flux_bands=include_flux_bands,
+                ),
+                latent_dim=latent_dim,
+                d_model=match_d_model,
+                dropout=match_dropout,
+            ).to(self.device)
+            self.match_optimizer = optim.AdamW(self.matcher.parameters(), lr=match_lr)
+
     def train(self, epochs=None):
         if epochs is None:
             epochs = self.config.get('diffusion', {}).get('epochs', 20)
@@ -181,10 +224,16 @@ class DiffusionTrainer:
         dataset = LatentDiffusionDataset(self.vae, config=self.config, device=self.device)
         dataloader = DataLoader(dataset, batch_size=batch_size)
         p_style_drop = float(self.config.get('diffusion', {}).get('p_style_drop', 0.2))
+        p_audio_drop = float(self.config.get('diffusion', {}).get('p_audio_drop', 0.0))
         p_prev_latent_drop = float(self.config.get('diffusion', {}).get('p_prev_latent_drop', 0.0))
         p_prev_latent_noisy = float(self.config.get('diffusion', {}).get('p_prev_latent_noisy', 0.0))
+        audio_shuffle_loss_weight = float(self.config.get("diffusion", {}).get("audio_shuffle_loss_weight", 0.0))
+        audio_shuffle_loss_margin = float(self.config.get("diffusion", {}).get("audio_shuffle_loss_margin", 0.05))
+        audio_shuffle_loss_prob = float(self.config.get("diffusion", {}).get("audio_shuffle_loss_prob", 0.5))
         
         self.model.train()
+        if self.matcher is not None:
+            self.matcher.train()
         
         for epoch in range(epochs):
             total_loss = 0
@@ -204,6 +253,11 @@ class DiffusionTrainer:
                 if p_style_drop > 0:
                     drop_mask = (torch.rand((B,), device=self.device) < p_style_drop).to(style.dtype)[:, None]
                     style = style * (1.0 - drop_mask)
+
+                # Audio dropout (classifier-free conditioning): sometimes remove audio so guidance is possible at inference.
+                if p_audio_drop > 0:
+                    drop_a = (torch.rand((B,), device=self.device) < p_audio_drop).to(audio.dtype)[:, None, None]
+                    audio = audio * (1.0 - drop_a)
                 
                 # Sample random timesteps
                 t = torch.randint(0, self.scheduler.num_timesteps, (B,), device=self.device).long()
@@ -225,13 +279,82 @@ class DiffusionTrainer:
                     drop_prev = (torch.rand((B,), device=self.device) < p_prev_latent_drop).to(prev_cond.dtype)
                     drop_prev = drop_prev[:, None, None, None]
                     prev_cond = prev_cond * (1.0 - drop_prev)
+
+                # ---- Phase 5 (optional): train matcher and compute generator penalty ----
+                match_gen_loss = None
+                if self.matcher is not None and self.match_optimizer is not None and self.match_weight > 0:
+                    # Helper: freeze/unfreeze matcher weights without blocking gradient to inputs.
+                    def _set_matcher_trainable(trainable: bool) -> None:
+                        for p in self.matcher.parameters():
+                            p.requires_grad = bool(trainable)
+
+                    # 1) Update matcher (classification on GT latents; diffusion not affected)
+                    _set_matcher_trainable(True)
+                    self.match_optimizer.zero_grad()
+
+                    perm = torch.randperm(B, device=self.device)
+                    audio_neg = audio[perm]
+                    # Pos = (audio, latent) matched; Neg = (shuffled audio, same latent)
+                    logits_pos = self.matcher(audio, latents.detach())
+                    logits_neg = self.matcher(audio_neg, latents.detach())
+                    logits = torch.cat([logits_pos, logits_neg], dim=0)
+                    labels = torch.cat(
+                        [
+                            torch.ones((B,), device=self.device, dtype=logits.dtype),
+                            torch.zeros((B,), device=self.device, dtype=logits.dtype),
+                        ],
+                        dim=0,
+                    )
+                    match_disc_loss = nn.functional.binary_cross_entropy_with_logits(logits, labels)
+                    match_disc_loss.backward()
+                    self.match_optimizer.step()
+
+                    # 2) Generator-side penalty: encourage diffusion outputs to look "matched" to the matcher.
+                    # Freeze matcher weights but keep gradient to x0_pred.
+                    _set_matcher_trainable(False)
                 
-                # Predict noise
+                # Predict noise (diffusion)
                 self.optimizer.zero_grad()
                 noise_pred = self.model(noisy_latents, t, audio, style=style, prev_latent=prev_cond, frame_idx=frame_idx)
+
+                # Primary loss
+                loss_main = nn.functional.mse_loss(noise_pred, noise)
+                loss = loss_main
+
+                # Direct shuffle pressure: force shuffled-audio conditioning to be worse.
+                shuffle_pen = None
+                if audio_shuffle_loss_weight > 0 and audio_shuffle_loss_prob > 0 and B >= 2:
+                    if torch.rand(()) < audio_shuffle_loss_prob:
+                        perm = torch.randperm(B, device=self.device)
+                        audio_shuf = audio[perm]
+                        noise_pred_shuf = self.model(
+                            noisy_latents,
+                            t,
+                            audio_shuf,
+                            style=style,
+                            prev_latent=prev_cond,
+                            frame_idx=frame_idx,
+                        )
+                        loss_shuf = nn.functional.mse_loss(noise_pred_shuf, noise)
+                        # Encourage: loss_shuf >= loss_main + margin
+                        shuffle_pen = torch.relu(loss_main + audio_shuffle_loss_margin - loss_shuf)
+                        loss = loss + (audio_shuffle_loss_weight * shuffle_pen)
+
+                # Generator penalty: make predicted x0 depend on audio (optional)
+                if self.matcher is not None and self.match_weight > 0:
+                    # x_t = sqrt(acp)*x0 + sqrt(1-acp)*eps
+                    # => x0 = (x_t - sqrt(1-acp)*eps) / sqrt(acp)
+                    acp = self.scheduler.alphas_cumprod[t].to(noisy_latents.dtype)  # (B,)
+                    sqrt_acp = torch.sqrt(acp)[:, None, None, None]
+                    sqrt_om = torch.sqrt(1.0 - acp)[:, None, None, None]
+                    x0_pred = (noisy_latents - sqrt_om * noise_pred) / (sqrt_acp + 1e-8)
+
+                    # matcher weights are frozen (requires_grad False), but gradient flows to x0_pred
+                    logits_gen = self.matcher(audio, x0_pred)
+                    gen_labels = torch.ones((B,), device=self.device, dtype=logits_gen.dtype)
+                    match_gen_loss = nn.functional.binary_cross_entropy_with_logits(logits_gen, gen_labels)
+                    loss = loss + (self.match_weight * match_gen_loss)
                 
-                # Loss
-                loss = nn.functional.mse_loss(noise_pred, noise)
                 loss.backward()
                 self.optimizer.step()
                 
@@ -240,7 +363,13 @@ class DiffusionTrainer:
                 
                 if batch_idx % 10 == 0:
                     print(f"Epoch {epoch+1} | Batch {batch_idx} | Loss: {loss.item():.4f}")
-                    self.tracker.log_metrics({"diff_batch_loss": loss.item()})
+                    metrics = {"diff_batch_loss": loss.item()}
+                    metrics["diff_loss_main"] = float(loss_main.item())
+                    if match_gen_loss is not None:
+                        metrics["diff_match_gen_loss"] = float(match_gen_loss.item())
+                    if shuffle_pen is not None:
+                        metrics["diff_audio_shuffle_pen"] = float(shuffle_pen.item())
+                    self.tracker.log_metrics(metrics)
             
             if batch_count > 0:
                 avg_loss = total_loss / batch_count

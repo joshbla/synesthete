@@ -24,6 +24,9 @@ def _build_audio_batch(
     n_fft: int,
     num_bands: int,
     context: int,
+    include_abs_rms: bool,
+    include_onset: bool,
+    include_flux_bands: bool,
     device: torch.device,
 ) -> torch.Tensor:
     audio_feats = compute_audio_timeline(
@@ -33,6 +36,10 @@ def _build_audio_batch(
         num_frames=num_frames,
         n_fft=n_fft,
         num_bands=num_bands,
+        normalize_per_clip=bool(os.environ.get("SYNESTHETE_AUDIO_NORM", "1") == "1"),
+        include_abs_rms=include_abs_rms,
+        include_onset=include_onset,
+        include_flux_bands=include_flux_bands,
     )  # (T, F)
 
     ctx_feats = []
@@ -54,6 +61,7 @@ def _sample_latents_sequential(
     latent_dim: int,
     latent_spatial_size: int,
     diffusion_seed: int,
+    audio_guidance_scale: float,
 ) -> torch.Tensor:
     device = audio_batch.device
     T = int(audio_batch.shape[0])
@@ -75,6 +83,7 @@ def _sample_latents_sequential(
             style=frame_style,
             prev_latent=prev,
             frame_idx=frame_idx,
+            audio_guidance_scale=audio_guidance_scale,
         )
         latents_out.append(lat)
         prev = lat.detach()
@@ -89,7 +98,12 @@ def main() -> int:
     p.add_argument("--diffusion-seed", type=int, default=0, help="Seed for diffusion sampling noise (deterministic A/B).")
     p.add_argument("--shuffle-seed", type=int, default=0, help="Seed for audio shuffling permutation.")
     p.add_argument("--save-videos", action="store_true", help="Also write mp4s for visual inspection.")
-    p.add_argument("--out-prefix", type=str, default="output_reactivity", help="Prefix for outputs when --save-videos is set.")
+    p.add_argument(
+        "--out-prefix",
+        type=str,
+        default=os.path.join("outputs", "output_reactivity"),
+        help="Prefix for outputs when --save-videos is set.",
+    )
     args = p.parse_args()
 
     device = get_device()
@@ -106,6 +120,9 @@ def main() -> int:
     num_bands = int(config.get("diffusion", {}).get("audio_feature_num_bands", 8))
     n_fft = int(config.get("diffusion", {}).get("audio_feature_n_fft", 512))
     context = int(config.get("diffusion", {}).get("audio_feature_context", 0))
+    include_abs_rms = bool(config.get("diffusion", {}).get("audio_feature_include_abs_rms", False))
+    include_onset = bool(config.get("diffusion", {}).get("audio_feature_include_onset", False))
+    include_flux_bands = bool(config.get("diffusion", {}).get("audio_feature_include_flux_bands", False))
     timesteps = int(config.get("diffusion", {}).get("timesteps", 50))
     style_dim = int(config.get("diffusion", {}).get("style_dim", 64))
 
@@ -129,7 +146,12 @@ def main() -> int:
         latent_dim=latent_dim,
         d_model=d_model,
         latent_spatial_size=latent_spatial_size,
-        audio_feature_dim=audio_feature_dim(num_bands),
+        audio_feature_dim=audio_feature_dim(
+            num_bands,
+            include_abs_rms=include_abs_rms,
+            include_onset=include_onset,
+            include_flux_bands=include_flux_bands,
+        ),
         style_dim=style_dim,
         prev_latent_weight=prev_latent_weight,
     ).to(device)
@@ -169,6 +191,9 @@ def main() -> int:
         waveform = torch.cat([waveform, torch.zeros((1, target_len - waveform.shape[1]))], dim=1)
 
     # Build conditioning batch (T, T_ctx, F)
+    # Respect config for per-clip normalization
+    os.environ["SYNESTHETE_AUDIO_NORM"] = "1" if bool(config.get("diffusion", {}).get("audio_feature_normalize_per_clip", True)) else "0"
+
     audio_batch = _build_audio_batch(
         waveform,
         sample_rate=sample_rate,
@@ -177,6 +202,9 @@ def main() -> int:
         n_fft=n_fft,
         num_bands=num_bands,
         context=context,
+        include_abs_rms=include_abs_rms,
+        include_onset=include_onset,
+        include_flux_bands=include_flux_bands,
         device=device,
     )
 
@@ -192,6 +220,7 @@ def main() -> int:
     style = style_one.repeat(int(audio_batch.shape[0]), 1)
 
     # Normal sampling
+    audio_guidance_scale = float((config.get("inference", {}) or {}).get("audio_guidance_scale", 1.0))
     lat_norm = _sample_latents_sequential(
         model=model,
         scheduler=scheduler,
@@ -200,6 +229,7 @@ def main() -> int:
         latent_dim=latent_dim,
         latent_spatial_size=latent_spatial_size,
         diffusion_seed=args.diffusion_seed,
+        audio_guidance_scale=audio_guidance_scale,
     )
 
     # Shuffled-audio sampling (same diffusion/style seeds)
@@ -214,9 +244,10 @@ def main() -> int:
         latent_dim=latent_dim,
         latent_spatial_size=latent_spatial_size,
         diffusion_seed=args.diffusion_seed,
+        audio_guidance_scale=audio_guidance_scale,
     )
 
-    # Metrics: how much the output changes when audio is shuffled
+    # Metrics (latent space): how much the output changes when audio is shuffled
     l2 = torch.mean((lat_norm - lat_shuf) ** 2).item()
     l1 = torch.mean(torch.abs(lat_norm - lat_shuf)).item()
     denom = (torch.mean(torch.abs(lat_norm)) + 1e-8).item()
@@ -227,12 +258,30 @@ def main() -> int:
     print(f"- latent_l1:  {l1:.6f}")
     print(f"- rel_l1:     {rel_l1:.6f}   (higher = more change when audio is shuffled)")
 
+    # Metrics (decoded frames): more human-meaningful than latent deltas.
+    # If VAE isn't available, skip silently (latent metrics still useful).
+    try:
+        with torch.no_grad():
+            frames_a = vae.decode(lat_norm).clamp(0, 1)
+            frames_b = vae.decode(lat_shuf).clamp(0, 1)
+        f_mse = torch.mean((frames_a - frames_b) ** 2).item()
+        f_l1 = torch.mean(torch.abs(frames_a - frames_b)).item()
+        f_denom = (torch.mean(torch.abs(frames_a)) + 1e-8).item()
+        f_rel_l1 = float(f_l1 / f_denom)
+        print("Decoded-frame reactivity (shuffle test):")
+        print(f"- frame_mse: {f_mse:.6f}")
+        print(f"- frame_l1:  {f_l1:.6f}")
+        print(f"- rel_l1:    {f_rel_l1:.6f}   (higher = more visible change)")
+    except Exception:
+        pass
+
     if args.save_videos:
         from torchcodec.encoders import VideoEncoder
         import torchaudio
         import subprocess
 
         out_prefix = args.out_prefix
+        Path(out_prefix).parent.mkdir(parents=True, exist_ok=True)
         out_a = f"{out_prefix}_normal.mp4"
         out_b = f"{out_prefix}_shuffled.mp4"
 

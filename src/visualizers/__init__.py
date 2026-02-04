@@ -12,6 +12,7 @@ from .kaleidoscope import KaleidoscopeVisualizer
 from .augment import AugmentedVisualizer
 from .programs import ProgramSpec, seed_everything
 from .compositor import CompositorVisualizer
+from .debug import DebugPulseGlobal, DebugBandsBars
 
 # Keep an explicit balance between "clean geometric" and "organic/painterly/abstract".
 _GEOMETRIC_REGISTRY = [
@@ -29,6 +30,7 @@ _ORGANIC_REGISTRY = [
 ]
 
 _BASE_REGISTRY = _GEOMETRIC_REGISTRY + _ORGANIC_REGISTRY
+_DEBUG_REGISTRY = [DebugPulseGlobal, DebugBandsBars]
 
 def _make_augmented_from(pool):
     return AugmentedVisualizer(lambda: random.choice(pool)())
@@ -48,9 +50,26 @@ def get_random_visualizer(config: dict | None = None, seed: int | None = None, r
 
     cfg = config or {}
     vcfg = (cfg.get("visualizers", {}) or {}) if isinstance(cfg, dict) else {}
+    dcfg = (cfg.get("data", {}) or {}) if isinstance(cfg, dict) else {}
     aug_prob = float(vcfg.get("aug_prob", 0.35))
     organic_prob = float(vcfg.get("organic_prob", 0.5))
     composite_prob = float(vcfg.get("composite_prob", 0.25))
+
+    audio_debug_mode = bool(dcfg.get("audio_debug_mode", False))
+    audio_debug_mix_prob = float(dcfg.get("audio_debug_mix_prob", 0.0))
+    if audio_debug_mix_prob < 0:
+        audio_debug_mix_prob = 0.0
+    if audio_debug_mix_prob > 1:
+        audio_debug_mix_prob = 1.0
+
+    # Optional Phase 5 helper: when enabled (or mixed in), sample from a small set of
+    # deterministic, strongly audio-reactive programs. This is useful for proving
+    # the model can learn audio dependence before scaling diversity back up.
+    if audio_debug_mode or (audio_debug_mix_prob > 0 and random.random() < audio_debug_mix_prob):
+        viz_cls = random.choice(_DEBUG_REGISTRY)
+        viz = viz_cls()
+        spec = ProgramSpec(seed=seed, family="geometric", kind="primitive", visualizers=(viz_cls.__name__,), meta={"audio_debug": True})
+        return (viz, spec) if return_spec else viz
 
     # 50/50 family balance
     family = "geometric" if random.random() >= organic_prob else "organic"

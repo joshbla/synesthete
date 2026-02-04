@@ -9,28 +9,34 @@
 ##
 
 data:
-  duration: 2.0
+  # Faster smoke: shorter + fewer frames
+  duration: 1.5
   height: 128
   width: 128
-  fps: 20
+  fps: 15
   num_samples: 60
+  # Phase 5 helper: prove audio dependence quickly.
+  # You can set this true temporarily to train on only deterministic, strongly reactive debug programs.
+  audio_debug_mode: false
+  # Or mix debug programs into normal sampling to gradually reintroduce diversity.
+  audio_debug_mix_prob: 0.25
 
 model:
   frame_size: [128, 128]
-  # duration * fps = 40 frames
-  num_frames: 40
+  # duration * fps = ~22 frames
+  num_frames: 22
   d_model: 256
 
 vae:
   epochs: 1
-  samples_per_epoch: 300
+  samples_per_epoch: 150
   batch_size: 32
 
 diffusion:
-  epochs: 2
-  samples_per_epoch: 600
+  epochs: 1
+  samples_per_epoch: 250
   batch_size: 16
-  timesteps: 25
+  timesteps: 15
   frames_per_clip: 10
   # Phase 4 temporal knobs
   # - seq_len: how many contiguous frames are used per training snippet (higher = more temporal learning).
@@ -47,7 +53,7 @@ tracker:
   enabled: false
 
 inference:
-  output_video: "output_smoke.mp4"
+  output_video: "outputs/output_smoke.mp4"
   # Default smoke behavior: sample a random style (matches "real" generation).
   # If you suspect style is masking audio-reactivity, temporarily set:
   #   style_mode: "zero"

@@ -245,7 +245,20 @@ This section tracks what has been implemented so far, so the plan stays a “liv
       - `diffusion.p_prev_latent_noisy`
 
 - **Phase 5 — Detect/punish “ignoring audio”**
-  - **Not started**: No automated “audio shuffle test,” mismatch pressure, or diversity probes yet.
+  - **In progress (expanded)**:
+    - Added evaluation probes:
+      - audio shuffle reactivity metrics (including decoded-frame deltas)
+      - style diversity probe
+      - renderer target-signal audit (verifies the synthetic target actually changes with audio)
+      - VAE encode→decode reactivity check (tests whether VAE preserves audio-linked differences)
+    - Added “human-auditable” audio variants:
+      - explicit silence + track dropouts (so visuals should clearly settle during silence)
+    - Added a bootstrap/debug training distribution:
+      - deterministic, strongly audio-reactive debug programs (`data.audio_debug_mode` / `data.audio_debug_mix_prob`)
+    - Added training pressure that finally improved human-visible audio responsiveness:
+      - direct audio-shuffle hinge penalty in diffusion training (forces shuffled audio to perform worse than correct audio)
+    - Added optional audio classifier-free guidance:
+      - train-time audio dropout + inference-time `audio_guidance_scale` to amplify audio effects once learned
 
 ### Practical implication for existing checkpoints
 

@@ -10,6 +10,16 @@ data:
   height: 256
   width: 256
   fps: 30
+  # Phase 5 helper: optional training distribution to prove audio dependence.
+  # When enabled, synthetic training clips come from a small set of deterministic,
+  # strongly audio-reactive debug programs (no augmentation/composition).
+  audio_debug_mode: false
+  # If > 0, mix debug programs into normal sampling with this probability.
+  # Useful for gradually reintroducing diversity (e.g., 0.2–0.5).
+  audio_debug_mix_prob: 0.0
+  # Phase 5 human-eval helper: mix in clips with explicit silences/track dropouts.
+  # These make it obvious when visuals should settle (silence) and which elements should respond.
+  audio_silence_mix_prob: 0.0
 
 model:
   frame_size: [256, 256]
@@ -74,7 +84,41 @@ diffusion:
   audio_feature_n_fft: 512
   audio_feature_num_bands: 8
   audio_feature_context: 0
+  # If true, z-score features per clip. For silence/settling tests, setting this false
+  # preserves absolute loudness cues (especially when combined with abs_rms channel).
+  audio_feature_normalize_per_clip: true
+  # Phase 5: richer features for clearer responsiveness (optional)
+  audio_feature_include_abs_rms: true
+  audio_feature_include_onset: true
+  audio_feature_include_flux_bands: false
   frames_per_clip: 10
+
+  # Phase 5 (optional): make "ignoring audio" punishable
+  #
+  # This adds a small learned matcher/discriminator that tries to tell if (audio, latent)
+  # pairs are matched vs mismatched. Its score can be used as an auxiliary training signal
+  # so diffusion is pressured to actually use audio.
+  #
+  # - match_enabled: enables matcher training + generator-side penalty
+  # - match_weight: scale of the generator penalty (higher = stronger push to use audio)
+  # - match_lr: learning rate for the matcher network
+  # - match_d_model: internal width of matcher
+  # - match_dropout: dropout inside matcher MLPs
+  match_enabled: false
+  match_weight: 0.1
+  match_lr: 0.0001
+  match_d_model: 256
+  match_dropout: 0.0
+  # Phase 5: classifier-free audio conditioning (train-time).
+  # With this probability, replace audio conditioning with zeros so the model learns an unconditional path.
+  # This enables audio guidance at inference time via inference.audio_guidance_scale.
+  p_audio_drop: 0.1
+
+  # Phase 5: direct audio-shuffle pressure (no extra network).
+  # Adds a hinge penalty encouraging the model to do worse when audio conditioning is shuffled.
+  audio_shuffle_loss_weight: 0.0
+  audio_shuffle_loss_margin: 0.05
+  audio_shuffle_loss_prob: 0.5
 
 tracker:
   enabled: true
@@ -83,13 +127,17 @@ tracker:
 
 
 inference:
-  output_video: "output_test.mp4"
+  # Output file path (relative paths are relative to repo root).
+  output_video: "outputs/output_test.mp4"
   # Phase 2: style control at inference time.
   # - "random": sample a new style latent per run (default)
   # - "zero": disable style randomness (useful for smoke tests / audio-reactivity checks)
   style_mode: "random"
   # Optional integer seed for deterministic style sampling (null = no seeding).
   style_seed: null
+  # Phase 5: classifier-free guidance for audio conditioning.
+  # 1.0 = no guidance; 1.5–4.0 can make audio effects more obvious (at some cost to diversity).
+  audio_guidance_scale: 1.0
 
 # Phase 3 data diversity knobs (optional).
 # These affect which procedural visualizers are sampled for synthetic training data.

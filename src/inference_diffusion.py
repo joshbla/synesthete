@@ -37,13 +37,21 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
     height = config.get('data', {}).get('height', 128)
     latent_spatial_size = height // 16
     num_bands = int(config.get('diffusion', {}).get('audio_feature_num_bands', 8))
+    include_abs_rms = bool(config.get('diffusion', {}).get('audio_feature_include_abs_rms', False))
+    include_onset = bool(config.get('diffusion', {}).get('audio_feature_include_onset', False))
+    include_flux_bands = bool(config.get('diffusion', {}).get('audio_feature_include_flux_bands', False))
     style_dim = int(config.get('diffusion', {}).get('style_dim', 64))
     prev_latent_weight = float(config.get('diffusion', {}).get('prev_latent_weight', 1.0))
     model = DiffusionTransformer(
         latent_dim=latent_dim,
         d_model=d_model,
         latent_spatial_size=latent_spatial_size,
-        audio_feature_dim=audio_feature_dim(num_bands),
+        audio_feature_dim=audio_feature_dim(
+            num_bands,
+            include_abs_rms=include_abs_rms,
+            include_onset=include_onset,
+            include_flux_bands=include_flux_bands,
+        ),
         style_dim=style_dim,
         prev_latent_weight=prev_latent_weight,
     ).to(device)
@@ -74,7 +82,11 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
         print("No input audio provided, generating synthetic complex test sound...")
         gen = AudioGenerator(sample_rate=sample_rate)
         duration = config.get('data', {}).get('duration', 3.0)
-        waveform = gen.generate_sequence(duration=duration, bpm=120) # (1, 48000)
+        audio_silence_mix_prob = float((config.get("data", {}) or {}).get("audio_silence_mix_prob", 0.0))
+        if audio_silence_mix_prob > 0 and torch.rand(()) < audio_silence_mix_prob:
+            waveform = gen.generate_sequence_dropouts(duration=duration, bpm=120)
+        else:
+            waveform = gen.generate_sequence(duration=duration, bpm=120) # (1, 48000)
         
     # Ensure correct length
     target_len = int(sample_rate * config.get('data', {}).get('duration', 3.0))
@@ -96,6 +108,7 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
     fps = config.get('data', {}).get('fps', 30)
     n_fft = int(config.get('diffusion', {}).get('audio_feature_n_fft', 512))
     context = int(config.get('diffusion', {}).get('audio_feature_context', 0))
+    normalize_per_clip = bool(config.get('diffusion', {}).get('audio_feature_normalize_per_clip', True))
     audio_feats = compute_audio_timeline(
         waveform.squeeze(0).cpu(),  # (1, N) on CPU is fine; we'll move to device after
         sample_rate=sample_rate,
@@ -103,6 +116,10 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
         num_frames=num_frames,
         n_fft=n_fft,
         num_bands=num_bands,
+        normalize_per_clip=normalize_per_clip,
+        include_abs_rms=include_abs_rms,
+        include_onset=include_onset,
+        include_flux_bands=include_flux_bands,
     )  # (T, F)
 
     # Build (T, T_ctx, F) then treat each frame as a batch item: (T, T_ctx, F)
@@ -135,12 +152,21 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
     # Phase 4: sequential sampling with previous-latent conditioning
     latents_out = []
     prev = torch.zeros((1, latent_dim, latent_spatial_size, latent_spatial_size), device=device)
+    audio_guidance_scale = float((config.get("inference", {}) or {}).get("audio_guidance_scale", 1.0))
     for i in range(batch_size):
         frame_audio = audio_batch[i : i + 1]  # (1, T_ctx, F)
         frame_style = style[i : i + 1]        # (1, style_dim)
         frame_idx = torch.tensor([i], device=device, dtype=torch.long)
         shape = (1, latent_dim, latent_spatial_size, latent_spatial_size)
-        lat = scheduler.sample(model, frame_audio, shape, style=frame_style, prev_latent=prev, frame_idx=frame_idx)
+        lat = scheduler.sample(
+            model,
+            frame_audio,
+            shape,
+            style=frame_style,
+            prev_latent=prev,
+            frame_idx=frame_idx,
+            audio_guidance_scale=audio_guidance_scale,
+        )
         latents_out.append(lat)
         prev = lat.detach()
     latents = torch.cat(latents_out, dim=0)  # (T, 256, h, w)

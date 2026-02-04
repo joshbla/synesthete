@@ -33,7 +33,17 @@ class NoiseScheduler:
         x_t = sqrt_alphas_cumprod * x_0 + sqrt_one_minus_alphas_cumprod * noise
         return x_t, noise
         
-    def sample(self, model, audio, shape, style=None, prev_latent=None, frame_idx=None):
+    def sample(
+        self,
+        model,
+        audio,
+        shape,
+        style=None,
+        prev_latent=None,
+        frame_idx=None,
+        *,
+        audio_guidance_scale: float = 1.0,
+    ):
         """
         Sample from the model.
         audio: (B, T_audio, F) frame-aligned audio features
@@ -54,7 +64,15 @@ class NoiseScheduler:
             t = torch.full((B,), i, device=self.device, dtype=torch.long)
             
             with torch.no_grad():
-                predicted_noise = model(x, t, audio, style=style, prev_latent=prev_latent, frame_idx=frame_idx)
+                if audio_guidance_scale is not None and float(audio_guidance_scale) != 1.0:
+                    # Classifier-free guidance (audio): run unconditional (audio=0) and conditional (audio) paths.
+                    audio0 = torch.zeros_like(audio)
+                    eps_uncond = model(x, t, audio0, style=style, prev_latent=prev_latent, frame_idx=frame_idx)
+                    eps_cond = model(x, t, audio, style=style, prev_latent=prev_latent, frame_idx=frame_idx)
+                    s = float(audio_guidance_scale)
+                    predicted_noise = eps_uncond + s * (eps_cond - eps_uncond)
+                else:
+                    predicted_noise = model(x, t, audio, style=style, prev_latent=prev_latent, frame_idx=frame_idx)
                 
             alpha = self.alphas[i]
             alpha_cumprod = self.alphas_cumprod[i]
