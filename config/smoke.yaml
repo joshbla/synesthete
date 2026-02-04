@@ -32,6 +32,16 @@ diffusion:
   batch_size: 16
   timesteps: 25
   frames_per_clip: 10
+  # Phase 4 temporal knobs
+  # - seq_len: how many contiguous frames are used per training snippet (higher = more temporal learning).
+  seq_len: 8
+  # - prev_latent_weight: strength of previous-frame latent conditioning (0 disables temporal coupling).
+  prev_latent_weight: 1.0
+  # Phase 4 training robustness knobs (reduce train/infer mismatch)
+  # - p_prev_latent_drop: randomly drop prev_latent conditioning (can reduce over-smoothing).
+  p_prev_latent_drop: 0.1
+  # - p_prev_latent_noisy: replace prev_latent with one noised to the current timestep t (improves robustness).
+  p_prev_latent_noisy: 0.5
 
 tracker:
   enabled: false

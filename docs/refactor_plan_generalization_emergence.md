@@ -231,7 +231,18 @@ This section tracks what has been implemented so far, so the plan stays a “liv
     - `visualizers.aug_prob`, `visualizers.organic_prob`, `visualizers.composite_prob`
 
 - **Phase 4 — Temporal coherence**
-  - **Not started**: Frames are still sampled i.i.d. (even though conditioning is now time-aligned per frame).
+  - **Completed (minimal)**: Added a minimal temporal mechanism (previous-latent conditioning) and contiguous snippet sampling.
+  - **What changed**:
+    - Diffusion training samples contiguous frame snippets and conditions each frame on the previous frame’s latent.
+    - Inference generates frames sequentially so temporal conditioning is actually used (reduces flicker / style jitter).
+    - Added a frame index embedding so the model can represent “where we are” in the clip.
+  - **Config added**:
+    - `diffusion.seq_len`
+    - `diffusion.prev_latent_weight`
+  - **Follow-up (Phase 4+)**:
+    - Added training-time robustness knobs to reduce train/infer mismatch for `prev_latent`:
+      - `diffusion.p_prev_latent_drop`
+      - `diffusion.p_prev_latent_noisy`
 
 - **Phase 5 — Detect/punish “ignoring audio”**
   - **Not started**: No automated “audio shuffle test,” mismatch pressure, or diversity probes yet.

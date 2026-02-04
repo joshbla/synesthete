@@ -1,0 +1,63 @@
+##
+# Smoke-test override config (audio reactivity probe)
+#
+# Use with:
+#   uv run python run_pipeline.py --override-config config/smoke_audio_probe.yaml --force-all
+#
+# This is intentionally an override vs config/default.yaml (like smoke.yaml),
+# but tuned to make "is it reacting to audio?" as obvious as possible.
+##
+
+data:
+  duration: 2.0
+  height: 128
+  width: 128
+  fps: 20
+  num_samples: 60
+
+model:
+  frame_size: [128, 128]
+  # duration * fps = 40 frames
+  num_frames: 40
+  d_model: 256
+
+vae:
+  epochs: 1
+  samples_per_epoch: 300
+  batch_size: 32
+
+diffusion:
+  epochs: 2
+  samples_per_epoch: 600
+  batch_size: 16
+  timesteps: 25
+  frames_per_clip: 10
+
+  # Phase 4 temporal knobs (probe settings)
+  # Keep snippets short but non-trivial.
+  seq_len: 8
+  # Weaken temporal smoothing so it doesn't wash out audio-driven changes.
+  prev_latent_weight: 0.3
+  # Make prev_latent conditioning robust (train/infer mismatch), but don't let it dominate.
+  p_prev_latent_drop: 0.3
+  p_prev_latent_noisy: 0.7
+
+  # Give the model a tiny bit of local audio context.
+  audio_feature_context: 1
+
+tracker:
+  enabled: false
+
+inference:
+  output_video: "output_smoke_probe_audio.mp4"
+  # Turn off style randomness so any visible change is more likely to be audio-driven.
+  style_mode: "zero"
+  # Keep a fixed seed anyway for repeatability (harmless in style_mode=zero).
+  style_seed: 123
+
+visualizers:
+  # Reduce "looks cool but isn't clearly audio-reactive" factors for the probe.
+  organic_prob: 0.5
+  aug_prob: 0.0
+  composite_prob: 0.0
+

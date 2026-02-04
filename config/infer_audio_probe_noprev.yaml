@@ -1,0 +1,36 @@
+##
+# Inference-only override: audio reactivity probe (no temporal coupling)
+#
+# Use with:
+#   uv run python run_pipeline.py --override-config config/infer_audio_probe_noprev.yaml
+#
+# This should SKIP training (uses existing checkpoints) and only changes inference behavior.
+##
+
+diffusion:
+  # Disable previous-latent conditioning at inference time to isolate audio influence.
+  prev_latent_weight: 0.0
+  # Match the checkpoint’s timestep schedule (otherwise load_state_dict fails).
+  timesteps: 25
+  # Match the checkpoint’s audio conditioning shape.
+  audio_feature_context: 1
+
+data:
+  # Match checkpoint latent spatial size (height/width -> latent grid).
+  height: 128
+  width: 128
+  fps: 20
+  duration: 2.0
+
+model:
+  # Match checkpoint architecture.
+  frame_size: [128, 128]
+  num_frames: 40
+  d_model: 256
+
+inference:
+  output_video: "output_smoke_probe_audio_noprev.mp4"
+  # Remove style randomness so any visible change is more likely audio-driven.
+  style_mode: "zero"
+  style_seed: 123
+

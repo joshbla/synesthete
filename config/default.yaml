@@ -39,6 +39,32 @@ diffusion:
   learning_rate: 0.0001
   batch_size: 32
   timesteps: 50
+  # Phase 4 temporal coherence
+  # Train on contiguous frame snippets and condition each frame on the previous latent.
+  #
+  # - seq_len: how many contiguous frames are sampled per synthetic clip during diffusion training.
+  #   Higher = stronger temporal signal (usually less flicker), but slower training and can over-regularize.
+  #   Typical values: 4–24. Minimum is 2.
+  seq_len: 8
+  #
+  # - prev_latent_weight: how strongly the model uses the previous-frame latent as conditioning.
+  #   0.0 disables temporal coupling (reverts to i.i.d.-ish frames); 1.0 is the default.
+  #   Try 0.5 for weaker smoothing; 2.0–3.0 for stronger coherence (may get “stuck”/over-smooth).
+  prev_latent_weight: 1.0
+  #
+  # Training robustness knobs (reduce train/infer mismatch for prev_latent):
+  # At inference, prev_latent comes from the model’s own previous prediction, not ground truth.
+  # These knobs make the model robust to imperfect / noisy prev_latent inputs.
+  #
+  # - p_prev_latent_drop: with this probability, drop prev_latent conditioning entirely (set to 0).
+  #   Useful if the model over-relies on temporal smoothing and ignores audio.
+  #   Try: 0.0–0.3
+  p_prev_latent_drop: 0.1
+  #
+  # - p_prev_latent_noisy: with this probability, replace prev_latent with a version noised to the SAME diffusion timestep t.
+  #   This helps because during denoising, the model sees noisy latents, not clean ones.
+  #   Try: 0.0–1.0 (a common starting point is 0.5)
+  p_prev_latent_noisy: 0.5
   # Phase 2 factorization (continuous style latent)
   style_dim: 64
   p_style_drop: 0.2

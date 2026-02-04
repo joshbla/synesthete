@@ -33,11 +33,13 @@ class NoiseScheduler:
         x_t = sqrt_alphas_cumprod * x_0 + sqrt_one_minus_alphas_cumprod * noise
         return x_t, noise
         
-    def sample(self, model, audio, shape, style=None):
+    def sample(self, model, audio, shape, style=None, prev_latent=None, frame_idx=None):
         """
         Sample from the model.
         audio: (B, T_audio, F) frame-aligned audio features
         style: (B, style_dim) optional clip-level style latent
+        prev_latent: (B, C, H, W) optional previous-frame latent (Phase 4)
+        frame_idx: (B,) optional frame index (Phase 4)
         shape: (B, C, H, W) -> (B, 256, 8, 8)
         """
         model.eval()
@@ -52,7 +54,7 @@ class NoiseScheduler:
             t = torch.full((B,), i, device=self.device, dtype=torch.long)
             
             with torch.no_grad():
-                predicted_noise = model(x, t, audio, style=style)
+                predicted_noise = model(x, t, audio, style=style, prev_latent=prev_latent, frame_idx=frame_idx)
                 
             alpha = self.alphas[i]
             alpha_cumprod = self.alphas_cumprod[i]
@@ -92,6 +94,7 @@ class DiffusionTransformer(nn.Module):
         latent_spatial_size=8,
         audio_feature_dim=13,
         style_dim=64,
+        prev_latent_weight: float = 1.0,
     ):
         super().__init__()
         
@@ -100,6 +103,7 @@ class DiffusionTransformer(nn.Module):
         self.latent_spatial_size = latent_spatial_size
         self.audio_feature_dim = audio_feature_dim
         self.style_dim = style_dim
+        self.prev_latent_weight = float(prev_latent_weight)
         num_tokens = latent_spatial_size * latent_spatial_size
         
         # 1. Time Embedding
@@ -131,10 +135,20 @@ class DiffusionTransformer(nn.Module):
             nn.GELU(),
             nn.Linear(d_model, d_model),
         )
+
+        # Phase 4: frame index embedding (separate from diffusion timestep)
+        self.frame_mlp = nn.Sequential(
+            SinusoidalPositionEmbeddings(d_model),
+            nn.Linear(d_model, d_model),
+            nn.GELU(),
+            nn.Linear(d_model, d_model),
+        )
         
         # 3. Latent Input Projection
         # Flatten spatial grid to tokens
         self.input_proj = nn.Conv2d(latent_dim, d_model, kernel_size=1)
+        # Phase 4: previous latent projection (same spatial shape as x)
+        self.prev_proj = nn.Conv2d(latent_dim, d_model, kernel_size=1)
         self.pos_embed = nn.Parameter(torch.zeros(1, num_tokens, d_model))
         
         # 4. Transformer Decoder (Cross-Attn to Audio)
@@ -145,18 +159,28 @@ class DiffusionTransformer(nn.Module):
         # 5. Output Projection
         self.output_proj = nn.Conv2d(d_model, latent_dim, kernel_size=1)
         
-    def forward(self, x, t, audio, style=None):
+    def forward(self, x, t, audio, style=None, prev_latent=None, frame_idx=None):
         """
         x: (B, latent_dim, H, W)
         t: (B,)
         audio: (B, T_audio, F)
         style: (B, style_dim) or None
+        prev_latent: (B, latent_dim, H, W) or None
+        frame_idx: (B,) int/float or None
         """
         B = x.shape[0]
         
         # 1. Embed Time
         t_emb = self.time_mlp(t) # (B, d_model)
         t_emb = t_emb.unsqueeze(1) # (B, 1, d_model)
+
+        # 1b. Embed Frame Index
+        if frame_idx is None:
+            frame_idx = torch.zeros((B,), device=x.device, dtype=torch.long)
+        if frame_idx.ndim != 1 or frame_idx.shape[0] != B:
+            raise ValueError(f"Expected frame_idx shape (B,), got {tuple(frame_idx.shape)}")
+        f_emb = self.frame_mlp(frame_idx.to(torch.float32))  # (B, d_model)
+        f_emb = f_emb.unsqueeze(1)  # (B, 1, d_model)
         
         # 2. Embed Audio features
         if audio.ndim != 3:
@@ -184,12 +208,19 @@ class DiffusionTransformer(nn.Module):
         # 3. Embed Latents
         h = self.input_proj(x) # (B, d_model, H, W)
         h = h.flatten(2).permute(0, 2, 1) # (B, num_tokens, d_model)
+
+        # 3b. Previous latent conditioning (additive)
+        if prev_latent is None:
+            prev_latent = torch.zeros_like(x)
+        if prev_latent.shape != x.shape:
+            raise ValueError(f"Expected prev_latent shape {tuple(x.shape)}, got {tuple(prev_latent.shape)}")
+        prev_h = self.prev_proj(prev_latent).flatten(2).permute(0, 2, 1)  # (B, num_tokens, d_model)
         
         # Add positional embedding
         h = h + self.pos_embed
         
-        # Add time embedding (broadcast over sequence)
-        h = h + t_emb
+        # Add time + frame embeddings (broadcast over sequence) and prev conditioning
+        h = h + t_emb + f_emb + (self.prev_latent_weight * prev_h)
         
         # 4. Transformer
         # tgt = latents, memory = (style + audio)

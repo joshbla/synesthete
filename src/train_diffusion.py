@@ -38,6 +38,7 @@ class LatentDiffusionDataset(IterableDataset):
         self.audio_feature_context = int(self.config.get('diffusion', {}).get('audio_feature_context', 0))
         self.audio_feature_T = 2 * self.audio_feature_context + 1
         self.style_dim = int(self.config.get('diffusion', {}).get('style_dim', 64))
+        self.seq_len = int(self.config.get('diffusion', {}).get('seq_len', 8))
         
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -102,9 +103,13 @@ class LatentDiffusionDataset(IterableDataset):
             # 3. Yield pairs
             # We yield (Audio_Features_for_Frame_i, Latent_Frame_i).
             # Conditioning is identifiable: frame i is paired with its aligned audio feature vector (optionally with neighbor context).
-            indices = torch.randperm(frames.size(0))
-            frames_per_clip = self.config.get('diffusion', {}).get('frames_per_clip', 10)
-            for i in indices[:frames_per_clip]:
+            # Phase 4: sample a contiguous subsequence so the model can learn temporal coherence.
+            # We yield per-frame samples, but with (prev_latent, frame_idx) included.
+            seq_len = max(2, min(self.seq_len, num_frames))
+            # Ensure we have a previous frame available (start >= 1)
+            start = random.randint(1, max(1, num_frames - seq_len))
+            end = min(num_frames, start + seq_len)
+            for i in range(start, end):
                 # Build a fixed-length context window in feature space: (T_ctx, F)
                 # Pad by edge-replication so batching works cleanly.
                 ctx = []
@@ -112,7 +117,9 @@ class LatentDiffusionDataset(IterableDataset):
                     jj = min(max(j, 0), num_frames - 1)
                     ctx.append(audio_feats[jj])
                 feat_ctx = torch.stack(ctx, dim=0)  # (T_ctx, F)
-                yield feat_ctx, latents[i], style_z
+                prev_latent = latents[i - 1]
+                frame_idx = torch.tensor(i, dtype=torch.long)
+                yield feat_ctx, latents[i], style_z, prev_latent, frame_idx
 
 class DiffusionTrainer:
     def __init__(self):
@@ -145,12 +152,14 @@ class DiffusionTrainer:
         latent_spatial_size = height // 16 
         num_bands = int(self.config.get('diffusion', {}).get('audio_feature_num_bands', 8))
         style_dim = int(self.config.get('diffusion', {}).get('style_dim', 64))
+        prev_latent_weight = float(self.config.get('diffusion', {}).get('prev_latent_weight', 1.0))
         self.model = DiffusionTransformer(
             latent_dim=latent_dim,
             d_model=d_model,
             latent_spatial_size=latent_spatial_size,
             audio_feature_dim=audio_feature_dim(num_bands),
             style_dim=style_dim,
+            prev_latent_weight=prev_latent_weight,
         ).to(self.device)
         lr = self.config.get('diffusion', {}).get('learning_rate', 1e-4)
         self.optimizer = optim.AdamW(self.model.parameters(), lr=lr)
@@ -172,6 +181,8 @@ class DiffusionTrainer:
         dataset = LatentDiffusionDataset(self.vae, config=self.config, device=self.device)
         dataloader = DataLoader(dataset, batch_size=batch_size)
         p_style_drop = float(self.config.get('diffusion', {}).get('p_style_drop', 0.2))
+        p_prev_latent_drop = float(self.config.get('diffusion', {}).get('p_prev_latent_drop', 0.0))
+        p_prev_latent_noisy = float(self.config.get('diffusion', {}).get('p_prev_latent_noisy', 0.0))
         
         self.model.train()
         
@@ -180,10 +191,12 @@ class DiffusionTrainer:
             start_time = time.time()
             batch_count = 0
             
-            for batch_idx, (audio, latents, style) in enumerate(dataloader):
+            for batch_idx, (audio, latents, style, prev_latents, frame_idx) in enumerate(dataloader):
                 audio = audio.to(self.device)
                 latents = latents.to(self.device) # (B, 256, 8, 8)
                 style = style.to(self.device)     # (B, style_dim)
+                prev_latents = prev_latents.to(self.device)  # (B, 256, 8, 8)
+                frame_idx = frame_idx.to(self.device).long() # (B,)
                 B = latents.shape[0]
 
                 # Style dropout: sometimes remove style conditioning so the model
@@ -197,10 +210,25 @@ class DiffusionTrainer:
                 
                 # Add noise
                 noisy_latents, noise = self.scheduler.add_noise(latents, t)
+
+                # Phase 4 robustness: make prev_latent look more like what inference provides.
+                # - Sometimes drop it entirely.
+                # - Sometimes noise it to the same diffusion timestep t.
+                prev_cond = prev_latents
+                if p_prev_latent_noisy > 0:
+                    noisy_prev, _ = self.scheduler.add_noise(prev_latents, t)
+                    use_noisy = (torch.rand((B,), device=self.device) < p_prev_latent_noisy).to(prev_latents.dtype)
+                    use_noisy = use_noisy[:, None, None, None]
+                    prev_cond = use_noisy * noisy_prev + (1.0 - use_noisy) * prev_cond
+
+                if p_prev_latent_drop > 0:
+                    drop_prev = (torch.rand((B,), device=self.device) < p_prev_latent_drop).to(prev_cond.dtype)
+                    drop_prev = drop_prev[:, None, None, None]
+                    prev_cond = prev_cond * (1.0 - drop_prev)
                 
                 # Predict noise
                 self.optimizer.zero_grad()
-                noise_pred = self.model(noisy_latents, t, audio, style=style)
+                noise_pred = self.model(noisy_latents, t, audio, style=style, prev_latent=prev_cond, frame_idx=frame_idx)
                 
                 # Loss
                 loss = nn.functional.mse_loss(noise_pred, noise)

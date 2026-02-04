@@ -38,12 +38,14 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
     latent_spatial_size = height // 16
     num_bands = int(config.get('diffusion', {}).get('audio_feature_num_bands', 8))
     style_dim = int(config.get('diffusion', {}).get('style_dim', 64))
+    prev_latent_weight = float(config.get('diffusion', {}).get('prev_latent_weight', 1.0))
     model = DiffusionTransformer(
         latent_dim=latent_dim,
         d_model=d_model,
         latent_spatial_size=latent_spatial_size,
         audio_feature_dim=audio_feature_dim(num_bands),
         style_dim=style_dim,
+        prev_latent_weight=prev_latent_weight,
     ).to(device)
     try:
         model.load_state_dict(torch.load(model_path, map_location=device))
@@ -130,11 +132,18 @@ def run_diffusion_inference(model_path="diffusion_checkpoints/diff_latest.pth", 
 
     style = style.repeat(batch_size, 1)
     
-    # Start with pure noise
-    shape = (batch_size, latent_dim, latent_spatial_size, latent_spatial_size)
-    
-    # Sample
-    latents = scheduler.sample(model, audio_batch, shape, style=style) # (90, 256, 8, 8)
+    # Phase 4: sequential sampling with previous-latent conditioning
+    latents_out = []
+    prev = torch.zeros((1, latent_dim, latent_spatial_size, latent_spatial_size), device=device)
+    for i in range(batch_size):
+        frame_audio = audio_batch[i : i + 1]  # (1, T_ctx, F)
+        frame_style = style[i : i + 1]        # (1, style_dim)
+        frame_idx = torch.tensor([i], device=device, dtype=torch.long)
+        shape = (1, latent_dim, latent_spatial_size, latent_spatial_size)
+        lat = scheduler.sample(model, frame_audio, shape, style=frame_style, prev_latent=prev, frame_idx=frame_idx)
+        latents_out.append(lat)
+        prev = lat.detach()
+    latents = torch.cat(latents_out, dim=0)  # (T, 256, h, w)
     
     # 5. Decode Latents
     print("Decoding latents...")
