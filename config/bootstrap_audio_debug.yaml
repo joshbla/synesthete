@@ -34,7 +34,7 @@ model:
 
 diffusion:
   # Training (fast-ish bootstrap)
-  epochs: 3
+  epochs: 30
   samples_per_epoch: 500
   batch_size: 16
   timesteps: 15

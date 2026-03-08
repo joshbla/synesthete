@@ -182,6 +182,11 @@ class DiffusionTrainer:
             style_dim=style_dim,
             prev_latent_weight=prev_latent_weight,
         ).to(self.device)
+        try:
+            self.model.load_state_dict(torch.load("diffusion_checkpoints/diff_latest.pth", map_location=self.device))
+            print("Resuming from existing Diffusion checkpoint.")
+        except Exception:
+            print("No existing Diffusion checkpoint found, training from scratch.")
         lr = self.config.get('diffusion', {}).get('learning_rate', 1e-4)
         self.optimizer = optim.AdamW(self.model.parameters(), lr=lr)
         
